@@ -42,6 +42,7 @@ class ThreadSafeBotManager:
                 try:
                     bot_instance = bot_data['instance']
                     bot_loop = bot_data.get('loop')
+                    # Chỉ đóng bot nếu loop còn đang chạy
                     if bot_loop and not bot_loop.is_closed():
                         asyncio.run_coroutine_threadsafe(bot_instance.close(), bot_loop)
                 except Exception as e:
@@ -155,6 +156,10 @@ def health_monitoring_check():
 # <<< XỬ LÝ ẢNH (OCR) >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
+    """
+    Tải ảnh, cắt ảnh thành 3 hoặc 4 phần, đọc số Print ở dưới cùng.
+    Trả về: List [(index_thẻ, số_print), ...]
+    """
     print(f"[OCR LOG] 📥 Đang tải ảnh từ URL...", flush=True)
     try:
         resp = requests.get(image_url, timeout=3)
@@ -177,7 +182,7 @@ def scan_image_for_prints(image_url):
             x_start = i * card_width
             x_end = (i + 1) * card_width
             
-            # Cắt lấy 15% dưới cùng
+            # Cắt lấy phần đáy (nơi chứa Print/Gen) - 15% dưới cùng
             y_start = int(height * 0.85) 
             crop_img = img[y_start:height, x_start:x_end]
 
@@ -203,13 +208,11 @@ def scan_image_for_prints(image_url):
         return []
 
 # ==============================================================================
-# <<< LOGIC NHẶT THẺ (ĐÃ TỐI ƯU RATE LIMIT) >>>
+# <<< LOGIC NHẶT THẺ >>>
 # ==============================================================================
 async def handle_grab(bot, msg, bot_num):
     channel_id = msg.channel.id
     target_server = next((s for s in servers if s.get('main_channel_id') == str(channel_id)), None)
-    
-    # 🛑 Nếu không tìm thấy server config -> DỪNG NGAY
     if not target_server: return
 
     bot_id_str = f'main_{bot_num}'
@@ -217,52 +220,17 @@ async def handle_grab(bot, msg, bot_num):
     ocr_enabled = target_server.get(f'ocr_enabled_{bot_num}', False)
     print_max_limit = target_server.get(f'print_threshold_{bot_num}', 1000)
 
-    if not auto_grab: 
-        return
-
-    # --- CHỐNG RATE LIMIT ---
-    # Random delay để tránh tất cả bot cùng gọi API một lúc
-    await asyncio.sleep(random.uniform(0.5, 1.5))
-
-    # --- TẢI LẠI TIN NHẮN (NẾU CẦN) ---
-    if not msg.embeds or not msg.embeds[0].image:
-        try:
-            msg = await msg.channel.fetch_message(msg.id)
-        except Exception as e:
-            if "429" in str(e): # Lỗi Rate Limit
-                print(f"[RATE LIMIT] ⚠️ Bot {bot_num} bị chặn API (429). Đang chờ...", flush=True)
-            else:
-                print(f"[DEBUG] ⚠️ Lỗi fetch message: {e}", flush=True)
-            return
+    if not auto_grab: return
 
     final_choice = None 
 
-    # --- ƯU TIÊN 1: OCR (QUÉT ẢNH) ---
-    # OCR chỉ dùng tin nhắn hiện tại, không spam API history.
-    # Nếu tìm thấy thẻ ngon -> Nhặt luôn -> BỎ QUA bước check tim (tiết kiệm API)
-    if ocr_enabled and msg.embeds and msg.embeds[0].image:
-        image_url = msg.embeds[0].image.url
-        print(f"[GRAB] 📷 Bot {bot_num} đang quét OCR...", flush=True)
-        
-        loop = asyncio.get_event_loop()
-        ocr_results = await loop.run_in_executor(None, scan_image_for_prints, image_url)
-        
-        valid_prints = [x for x in ocr_results if x[1] <= print_max_limit]
-        
-        if valid_prints:
-            best_print_idx, best_print_val = min(valid_prints, key=lambda x: x[1])
-            if best_print_idx < 4:
-                emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_print_idx]
-                final_choice = (emoji, 0.5, f"Low Print #{best_print_val}")
-                print(f"[GRAB] ✅ TÌM THẤY PRINT NGON! Index: {best_print_idx+1}, Value: {best_print_val}", flush=True)
-
-    # --- ƯU TIÊN 2: CHECK TIM (CHỈ CHẠY NẾU OCR KHÔNG RA) ---
-    # Bước này tốn API nhất (gọi history). Chỉ chạy khi cần thiết.
-    if not final_choice:
-        try:
-            # Giảm limit xuống 3 tin nhắn gần nhất để đỡ tốn
-            async for msg_item in msg.channel.history(limit=3):
-                if msg_item.author.id == int(karibbit_id) and msg_item.created_at > msg.created_at:
+    # --- BƯỚC 1: CHECK TIM (NHANH) ---
+    try:
+        channel = bot.get_channel(int(channel_id))
+        if channel:
+            await asyncio.sleep(0.5) 
+            async for msg_item in channel.history(limit=5):
+                if msg_item.author.id == int(karibbit_id) and msg_item.id > msg.id:
                     if not msg_item.embeds: continue
                     desc = msg_item.embeds[0].description
                     if not desc or '♡' not in desc: continue
@@ -280,11 +248,25 @@ async def handle_grab(bot, msg, bot_num):
                         emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
                         final_choice = (emoji, 0.8, f"Hearts {best_hearts}")
                         break
-        except Exception as e:
-            if "429" in str(e):
-                print(f"[RATE LIMIT] ⚠️ Bot {bot_num} bị chặn khi quét Tim.", flush=True)
-            else:
-                pass
+    except Exception as e:
+        print(f"[GRAB] Lỗi check tim: {e}", flush=True)
+
+    # --- BƯỚC 2: CHECK PRINT (OCR) ---
+    if not final_choice and ocr_enabled and msg.embeds and msg.embeds[0].image:
+        image_url = msg.embeds[0].image.url
+        print(f"[GRAB] 📷 Bắt đầu quét ảnh tìm Low Print (Max: {print_max_limit})...", flush=True)
+        
+        loop = asyncio.get_event_loop()
+        ocr_results = await loop.run_in_executor(None, scan_image_for_prints, image_url)
+        
+        valid_prints = [x for x in ocr_results if x[1] <= print_max_limit]
+        
+        if valid_prints:
+            best_print_idx, best_print_val = min(valid_prints, key=lambda x: x[1])
+            if best_print_idx < 4:
+                emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_print_idx]
+                final_choice = (emoji, 0.5, f"Low Print #{best_print_val}")
+                print(f"[GRAB] ✅ TÌMTHẤY PRINT NGON! Index: {best_print_idx+1}, Value: {best_print_val}", flush=True)
 
     # --- THỰC HIỆN GRAB ---
     if final_choice:
@@ -294,7 +276,8 @@ async def handle_grab(bot, msg, bot_num):
         async def grab_action():
             await asyncio.sleep(delay)
             try:
-                await msg.add_reaction(emoji)
+                target_msg = await msg.channel.fetch_message(msg.id)
+                await target_msg.add_reaction(emoji)
                 ktb_id = target_server.get('ktb_channel_id')
                 if ktb_id:
                     ktb = bot.get_channel(int(ktb_id))
@@ -305,15 +288,16 @@ async def handle_grab(bot, msg, bot_num):
         asyncio.create_task(grab_action())
 
 
-# --- KHỞI TẠO BOT (AN TOÀN + TỐI ƯU) ---
+# --- KHỞI TẠO BOT ---
 def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    # Tắt guild_subscriptions để nhẹ máy và giảm spam API ngầm
-    bot = discord.Client(self_bot=True, heartbeat_timeout=60.0, guild_subscription_options=discord.GuildSubscriptionOptions.off())
+    bot = discord.Client(self_bot=True)
     
-    try: bot_identifier = int(bot_id_str.split('_')[1])
-    except: bot_identifier = 99
+    try: 
+        bot_identifier = int(bot_id_str.split('_')[1])
+    except: 
+        bot_identifier = 99
 
     @bot.event
     async def on_ready():
@@ -324,42 +308,48 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     async def on_message(msg):
         if not is_main: return
         
-        # --- [TỐI ƯU] LỌC LOG CHỈ HIỆN KÊNH ĐƯỢC CẤU HÌNH ---
-        is_monitored_channel = any(s.get('main_channel_id') == str(msg.channel.id) for s in servers)
-        
-        # Nếu không phải kênh quan tâm -> Lờ đi (Không log, không xử lý)
-        if not is_monitored_channel:
-            return
-
-        # Chỉ log nếu đúng kênh quan tâm
+        # DEBUG: In ra mọi message có "dropping"
         if "dropping" in msg.content.lower():
-            print(f"[DEBUG] 👀 Bot {bot_id_str} thấy Drop tại kênh {msg.channel.id}", flush=True)
+            print(f"[DEBUG] 👀 Message có 'dropping' từ {msg.author.name} (ID: {msg.author.id}) | Kênh: {msg.channel.id}", flush=True)
+            print(f"[DEBUG] 📝 Content: {msg.content[:100]}...", flush=True)
 
         try:
+            # Check cả Karuta VÀ Karibbit
             if (msg.author.id == int(karuta_id) or msg.author.id == int(karibbit_id)) and "dropping" in msg.content.lower():
-                print(f"[DEBUG] ✅ PHÁT HIỆN DROP! Đang xử lý...", flush=True)
+                print(f"[DEBUG] ✅ PHÁT HIỆN DROP từ {msg.author.name}! Đang gọi hàm xử lý...", flush=True)
                 await handle_grab(bot, msg, bot_identifier)
         except Exception as e:
             print(f"[Err] {e}", flush=True)
+            traceback.print_exc()
 
     try:
+        # Thêm bot vào manager TRƯỚC khi start
         bot_manager.add_bot(bot_id_str, {'instance': bot, 'loop': loop})
         loop.run_until_complete(bot.start(token))
     except KeyboardInterrupt:
-        pass
+        print(f"[Bot] ⚠️ KeyboardInterrupt cho {bot_id_str}", flush=True)
     except Exception as e:
         print(f"[Bot] ❌ Crash {bot_id_str}: {e}", flush=True)
+        traceback.print_exc()
     finally:
+        # Cleanup an toàn
         try:
-            bot_manager.remove_bot(bot_id_str)
-            if not bot.is_closed():
-                loop.run_until_complete(bot.close())
-            if loop.is_running():
-                loop.stop()
             if not loop.is_closed():
+                # Đóng bot trước khi đóng loop
+                if not bot.is_closed():
+                    loop.run_until_complete(bot.close())
+                # Hủy tất cả tasks còn lại
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                # Đợi tasks bị hủy hoàn tất
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
                 loop.close()
         except Exception as e:
             print(f"[Bot] ⚠️ Lỗi cleanup {bot_id_str}: {e}", flush=True)
+        finally:
+            # Xóa khỏi manager
+            bot_manager.remove_bot(bot_id_str)
 
 # --- WEB SERVER (UI) ---
 app = Flask(__name__)
