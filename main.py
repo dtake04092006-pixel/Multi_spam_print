@@ -6,14 +6,13 @@ import numpy as np
 import pytesseract
 
 # --- CẤU HÌNH OCR ---
-# Trên Docker Linux, tesseract thường nằm ở đây
 pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
 
 load_dotenv()
 
 # --- CẤU HÌNH ---
 main_tokens = os.getenv("MAIN_TOKENS", "").split(",")
-tokens = os.getenv("TOKENS", "").split(",") # Token phụ (Không dùng trong chế độ Grab Only)
+tokens = os.getenv("TOKENS", "").split(",")
 karuta_id, karibbit_id = "646937666251915264", "1311684840462225440"
 BOT_NAMES = ["xsyx", "sofa", "dont", "ayaya", "owo", "astra", "singo", "dia pox", "clam", "rambo", "domixi", "dogi", "sicula", "mo turn", "jan taru", "kio sama"]
 acc_names = [f"Bot-{i:02d}" for i in range(1, 21)]
@@ -25,7 +24,7 @@ bot_states = {
 }
 server_start_time = time.time()
 
-# --- QUẢN LÍ BOT THREAD-SAFE ---
+# --- QUẢN LÝ BOT THREAD-SAFE ---
 class ThreadSafeBotManager:
     def __init__(self):
         self._bots = {}
@@ -33,13 +32,21 @@ class ThreadSafeBotManager:
         self._lock = threading.RLock()
 
     def add_bot(self, bot_id, bot_data):
-        with self._lock: self._bots[bot_id] = bot_data
+        with self._lock: 
+            self._bots[bot_id] = bot_data
 
     def remove_bot(self, bot_id):
         with self._lock:
             bot_data = self._bots.pop(bot_id, None)
             if bot_data and bot_data.get('instance'):
-                asyncio.run_coroutine_threadsafe(bot_data['instance'].close(), bot_data['loop'])
+                try:
+                    bot_instance = bot_data['instance']
+                    bot_loop = bot_data.get('loop')
+                    # Chỉ đóng bot nếu loop còn đang chạy
+                    if bot_loop and not bot_loop.is_closed():
+                        asyncio.run_coroutine_threadsafe(bot_instance.close(), bot_loop)
+                except Exception as e:
+                    print(f"[BotManager] ⚠️ Lỗi khi đóng bot {bot_id}: {e}", flush=True)
             return bot_data
 
     def get_bot_data(self, bot_id):
@@ -109,7 +116,7 @@ def get_bot_name(bot_id_str):
         return acc_names[int(parts[1])]
     except: return bot_id_str
 
-# --- CÁC HÀM HỖ TRỢ (ĐÃ BỔ SUNG CÁI THIẾU) ---
+# --- CÁC HÀM HỖ TRỢ ---
 def periodic_task(interval, task_func, task_name):
     print(f"[{task_name}] 🚀 Khởi động luồng định kỳ.", flush=True)
     while True:
@@ -259,7 +266,7 @@ async def handle_grab(bot, msg, bot_num):
             if best_print_idx < 4:
                 emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_print_idx]
                 final_choice = (emoji, 0.5, f"Low Print #{best_print_val}")
-                print(f"[GRAB] ✅ TÌM THẤY PRINT NGON! Index: {best_print_idx+1}, Value: {best_print_val}", flush=True)
+                print(f"[GRAB] ✅ TÌMTHẤY PRINT NGON! Index: {best_print_idx+1}, Value: {best_print_val}", flush=True)
 
     # --- THỰC HIỆN GRAB ---
     if final_choice:
@@ -286,8 +293,11 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     bot = discord.Client(self_bot=True)
-    try: bot_identifier = int(bot_id_str.split('_')[1])
-    except: bot_identifier = 99
+    
+    try: 
+        bot_identifier = int(bot_id_str.split('_')[1])
+    except: 
+        bot_identifier = 99
 
     @bot.event
     async def on_ready():
@@ -298,7 +308,6 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     async def on_message(msg):
         if not is_main: return
         
-        # [DEBUG] In ra để kiểm tra bot có bị mù không
         if msg.author.id == int(karuta_id):
             print(f"[DEBUG] 👀 Thấy Karuta chat tại kênh {msg.channel.id} | Content: {msg.content[:50]}...", flush=True)
 
@@ -308,15 +317,36 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
                 await handle_grab(bot, msg, bot_identifier)
         except Exception as e:
             print(f"[Err] {e}", flush=True)
+            traceback.print_exc()
 
     try:
+        # Thêm bot vào manager TRƯỚC khi start
         bot_manager.add_bot(bot_id_str, {'instance': bot, 'loop': loop})
         loop.run_until_complete(bot.start(token))
+    except KeyboardInterrupt:
+        print(f"[Bot] ⚠️ KeyboardInterrupt cho {bot_id_str}", flush=True)
     except Exception as e:
         print(f"[Bot] ❌ Crash {bot_id_str}: {e}", flush=True)
+        traceback.print_exc()
     finally:
-        bot_manager.remove_bot(bot_id_str)
-        loop.close()
+        # Cleanup an toàn
+        try:
+            if not loop.is_closed():
+                # Đóng bot trước khi đóng loop
+                if not bot.is_closed():
+                    loop.run_until_complete(bot.close())
+                # Hủy tất cả tasks còn lại
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                # Đợi tasks bị hủy hoàn tất
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.close()
+        except Exception as e:
+            print(f"[Bot] ⚠️ Lỗi cleanup {bot_id_str}: {e}", flush=True)
+        finally:
+            # Xóa khỏi manager
+            bot_manager.remove_bot(bot_id_str)
 
 # --- WEB SERVER (UI) ---
 app = Flask(__name__)
