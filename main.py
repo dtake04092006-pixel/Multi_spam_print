@@ -208,76 +208,99 @@ def scan_image_for_prints(image_url):
         return []
 
 # ==============================================================================
-# <<< LOGIC NHẶT THẺ >>>
+# <<< LOGIC NHẶT THẺ (DEBUG CHI TIẾT + FIX LAG ẢNH) >>>
 # ==============================================================================
 async def handle_grab(bot, msg, bot_num):
     channel_id = msg.channel.id
     target_server = next((s for s in servers if s.get('main_channel_id') == str(channel_id)), None)
-    if not target_server: return
+    
+    # 1. Kiểm tra cấu hình server
+    if not target_server: 
+        print(f"[DEBUG] ❌ Bot {bot_num}: Không tìm thấy cấu hình server cho kênh này.", flush=True)
+        return
 
     bot_id_str = f'main_{bot_num}'
     auto_grab = target_server.get(f'auto_grab_enabled_{bot_num}', False)
     ocr_enabled = target_server.get(f'ocr_enabled_{bot_num}', False)
     print_max_limit = target_server.get(f'print_threshold_{bot_num}', 1000)
 
-    if not auto_grab: return
+    # 2. Kiểm tra nút bật/tắt trên Web
+    # Lưu ý: Trên web nút phải hiện chữ "DISABLE GRAB" (màu đỏ/xám) thì biến này mới là True
+    if not auto_grab: 
+        print(f"[DEBUG] ⛔ Bot {bot_num}: AutoGrab đang TẮT. Hãy bấm nút trên Web!", flush=True)
+        return
+
+    # 3. [QUAN TRỌNG] CHỜ ẢNH LOAD (FIX LAG)
+    # Karuta thường mất 0.5s - 1s để load ảnh sau khi chat
+    print(f"[DEBUG] ⏳ Bot {bot_num}: Đang chờ 1 giây để Karuta tải ảnh...", flush=True)
+    await asyncio.sleep(1.0) 
+
+    try:
+        # Tải lại tin nhắn để lấy Embed mới nhất
+        msg = await msg.channel.fetch_message(msg.id)
+    except Exception as e:
+        print(f"[DEBUG] ❌ Lỗi khi tải lại tin nhắn: {e}", flush=True)
+        return
 
     final_choice = None 
 
-    # --- BƯỚC 1: CHECK TIM (NHANH) ---
-    try:
-        channel = bot.get_channel(int(channel_id))
-        if channel:
-            await asyncio.sleep(0.5) 
-            async for msg_item in channel.history(limit=5):
-                if msg_item.author.id == int(karibbit_id) and msg_item.id > msg.id:
-                    if not msg_item.embeds: continue
-                    desc = msg_item.embeds[0].description
-                    if not desc or '♡' not in desc: continue
+    # --- ƯU TIÊN 1: OCR (QUÉT ẢNH) ---
+    if ocr_enabled:
+        if not msg.embeds:
+            print(f"[DEBUG] ❌ Bot {bot_num}: Tin nhắn không có Embed (Ảnh lỗi hoặc mạng lag).", flush=True)
+        elif not msg.embeds[0].image:
+            print(f"[DEBUG] ❌ Bot {bot_num}: Embed có, nhưng không có URL ảnh.", flush=True)
+        else:
+            image_url = msg.embeds[0].image.url
+            print(f"[GRAB] 📷 Bot {bot_num}: Đang quét ảnh... (Max Print: {print_max_limit})", flush=True)
+            
+            loop = asyncio.get_event_loop()
+            ocr_results = await loop.run_in_executor(None, scan_image_for_prints, image_url)
+            
+            # Lọc thẻ có print nhỏ hơn giới hạn
+            valid_prints = [x for x in ocr_results if x[1] <= print_max_limit]
+            
+            if valid_prints:
+                best_print_idx, best_print_val = min(valid_prints, key=lambda x: x[1])
+                if best_print_idx < 4:
+                    emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_print_idx]
+                    final_choice = (emoji, 0.5, f"Low Print #{best_print_val}")
+                    print(f"[GRAB] ✅ Bot {bot_num}: TÌM THẤY PRINT NGON! Index: {best_print_idx+1}, Value: {best_print_val}", flush=True)
+            else:
+                # Nếu đọc được nhưng không có thẻ nào thỏa mãn
+                print(f"[DEBUG] 📉 Bot {bot_num}: Quét xong. Không có thẻ nào dưới {print_max_limit}.", flush=True)
 
-                    lines = desc.split('\n')[:4]
-                    heart_numbers = [int(re.search(r'♡(\d+)', line).group(1)) if re.search(r'♡(\d+)', line) else 0 for line in lines]
-                    
-                    min_h = target_server.get(f'heart_threshold_{bot_num}', 50)
-                    max_h = target_server.get(f'max_heart_threshold_{bot_num}', 99999)
-                    
-                    valid_cards = [(idx, hearts) for idx, hearts in enumerate(heart_numbers) if min_h <= hearts <= max_h]
-                    
-                    if valid_cards:
-                        best_idx, best_hearts = max(valid_cards, key=lambda x: x[1])
-                        emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
-                        final_choice = (emoji, 0.8, f"Hearts {best_hearts}")
-                        break
-    except Exception as e:
-        print(f"[GRAB] Lỗi check tim: {e}", flush=True)
-
-    # --- BƯỚC 2: CHECK PRINT (OCR) ---
-    if not final_choice and ocr_enabled and msg.embeds and msg.embeds[0].image:
-        image_url = msg.embeds[0].image.url
-        print(f"[GRAB] 📷 Bắt đầu quét ảnh tìm Low Print (Max: {print_max_limit})...", flush=True)
-        
-        loop = asyncio.get_event_loop()
-        ocr_results = await loop.run_in_executor(None, scan_image_for_prints, image_url)
-        
-        valid_prints = [x for x in ocr_results if x[1] <= print_max_limit]
-        
-        if valid_prints:
-            best_print_idx, best_print_val = min(valid_prints, key=lambda x: x[1])
-            if best_print_idx < 4:
-                emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_print_idx]
-                final_choice = (emoji, 0.5, f"Low Print #{best_print_val}")
-                print(f"[GRAB] ✅ TÌMTHẤY PRINT NGON! Index: {best_print_idx+1}, Value: {best_print_val}", flush=True)
+    # --- ƯU TIÊN 2: CHECK TIM (CHỈ CHẠY NẾU OCR KHÔNG RA) ---
+    if not final_choice:
+        try:
+            if msg.embeds and msg.embeds[0].description and '♡' in msg.embeds[0].description:
+                desc = msg.embeds[0].description
+                lines = desc.split('\n')[:4]
+                heart_numbers = [int(re.search(r'♡(\d+)', line).group(1)) if re.search(r'♡(\d+)', line) else 0 for line in lines]
+                
+                min_h = target_server.get(f'heart_threshold_{bot_num}', 50)
+                max_h = target_server.get(f'max_heart_threshold_{bot_num}', 99999)
+                
+                valid_cards = [(idx, hearts) for idx, hearts in enumerate(heart_numbers) if min_h <= hearts <= max_h]
+                
+                if valid_cards:
+                    best_idx, best_hearts = max(valid_cards, key=lambda x: x[1])
+                    emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
+                    final_choice = (emoji, 0.8, f"Hearts {best_hearts}")
+                    print(f"[GRAB] ❤️ Bot {bot_num}: Nhặt theo Tim ({best_hearts})", flush=True)
+        except Exception as e:
+            print(f"[GRAB] Lỗi check tim: {e}", flush=True)
 
     # --- THỰC HIỆN GRAB ---
     if final_choice:
         emoji, delay, reason = final_choice
-        print(f"[GRAB | Bot {bot_num}] 🎯 Quyết định nhặt {emoji}. Lý do: {reason}", flush=True)
+        print(f"[GRAB | Bot {bot_num}] 🎯 QUYẾT ĐỊNH NHẶT {emoji}. Lý do: {reason}", flush=True)
         
         async def grab_action():
             await asyncio.sleep(delay)
             try:
-                target_msg = await msg.channel.fetch_message(msg.id)
-                await target_msg.add_reaction(emoji)
+                await msg.add_reaction(emoji)
+                # KTB logic...
                 ktb_id = target_server.get('ktb_channel_id')
                 if ktb_id:
                     ktb = bot.get_channel(int(ktb_id))
