@@ -297,8 +297,14 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     @bot.event
     async def on_message(msg):
         if not is_main: return
+        
+        # [DEBUG] In ra để kiểm tra bot có bị mù không
+        if msg.author.id == int(karuta_id):
+            print(f"[DEBUG] 👀 Thấy Karuta chat tại kênh {msg.channel.id} | Content: {msg.content[:50]}...", flush=True)
+
         try:
             if msg.author.id == int(karuta_id) and "dropping" in msg.content.lower():
+                print(f"[DEBUG] ✅ PHÁT HIỆN DROP! Đang gọi hàm xử lý...", flush=True)
                 await handle_grab(bot, msg, bot_identifier)
         except Exception as e:
             print(f"[Err] {e}", flush=True)
