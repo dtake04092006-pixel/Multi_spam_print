@@ -13,7 +13,7 @@ load_dotenv()
 
 # --- CẤU HÌNH ---
 main_tokens = os.getenv("MAIN_TOKENS", "").split(",")
-tokens = os.getenv("TOKENS", "").split(",")
+tokens = os.getenv("TOKENS", "").split(",") # Token phụ (Không dùng trong chế độ Grab Only)
 karuta_id, karibbit_id = "646937666251915264", "1311684840462225440"
 BOT_NAMES = ["xsyx", "sofa", "dont", "ayaya", "owo", "astra", "singo", "dia pox", "clam", "rambo", "domixi", "dogi", "sicula", "mo turn", "jan taru", "kio sama"]
 acc_names = [f"Bot-{i:02d}" for i in range(1, 21)]
@@ -23,7 +23,6 @@ servers = []
 bot_states = {
     "reboot_settings": {}, "active": {}, "watermelon_grab": {}, "health_stats": {},
 }
-stop_events = {"reboot": threading.Event()}
 server_start_time = time.time()
 
 # --- QUẢN LÍ BOT THREAD-SAFE ---
@@ -69,30 +68,33 @@ class ThreadSafeBotManager:
 
 bot_manager = ThreadSafeBotManager()
 
-# --- HÀM GỬI LỆNH ASYNC TỪ LUỒNG ĐỒNG BỘ ---
-def send_message_from_sync(bot_id, channel_id, content):
-    bot_data = bot_manager.get_bot_data(bot_id)
-    if not bot_data: return
-    async def _send():
-        try:
-            channel = bot_data['instance'].get_channel(int(channel_id))
-            if channel: await channel.send(content)
-        except: pass
-    if bot_data['loop'].is_running():
-        asyncio.run_coroutine_threadsafe(_send(), bot_data['loop'])
-
 # --- LƯU & TẢI CÀI ĐẶT ---
 def save_settings():
     api_key, bin_id = os.getenv("JSONBIN_API_KEY"), os.getenv("JSONBIN_BIN_ID")
     settings_data = {'servers': servers, 'bot_states': bot_states, 'last_save_time': time.time()}
-    # (Giữ nguyên logic JSONBin/Local như cũ để tiết kiệm dòng code hiển thị ở đây)
+    if api_key and bin_id:
+        headers = {'Content-Type': 'application/json', 'X-Master-Key': api_key}
+        url = f"https://api.jsonbin.io/v3/b/{bin_id}"
+        try: requests.put(url, json=settings_data, headers=headers, timeout=15)
+        except: pass
     try:
         with open('backup_settings.json', 'w') as f: json.dump(settings_data, f, indent=2)
     except: pass
 
 def load_settings():
     global servers, bot_states
-    # (Giữ nguyên logic load như cũ)
+    api_key, bin_id = os.getenv("JSONBIN_API_KEY"), os.getenv("JSONBIN_BIN_ID")
+    if api_key and bin_id:
+        try:
+            headers = {'X-Master-Key': api_key}
+            url = f"https://api.jsonbin.io/v3/b/{bin_id}/latest"
+            req = requests.get(url, headers=headers, timeout=15)
+            if req.status_code == 200:
+                data = req.json().get("record", {})
+                servers.extend(data.get('servers', []))
+                bot_states.update(data.get('bot_states', {}))
+                return
+        except: pass
     try:
         with open('backup_settings.json', 'r') as f:
             data = json.load(f)
@@ -107,8 +109,44 @@ def get_bot_name(bot_id_str):
         return acc_names[int(parts[1])]
     except: return bot_id_str
 
+# --- CÁC HÀM HỖ TRỢ (ĐÃ BỔ SUNG CÁI THIẾU) ---
+def periodic_task(interval, task_func, task_name):
+    print(f"[{task_name}] 🚀 Khởi động luồng định kỳ.", flush=True)
+    while True:
+        time.sleep(interval)
+        try: task_func()
+        except Exception as e: print(f"[{task_name}] ❌ Lỗi: {e}", flush=True)
+
+def check_bot_health(bot_data, bot_id):
+    try:
+        stats = bot_states["health_stats"].setdefault(bot_id, {'consecutive_failures': 0, 'last_check': 0})
+        stats['last_check'] = time.time()
+        
+        if not bot_data or not bot_data.get('instance'):
+            stats['consecutive_failures'] += 1
+            return False
+
+        bot = bot_data['instance']
+        is_connected = bot.is_ready() and not bot.is_closed()
+        
+        if is_connected:
+            stats['consecutive_failures'] = 0
+        else:
+            stats['consecutive_failures'] += 1
+            print(f"[Health Check] ⚠️ Bot {bot_id} not connected - failures: {stats['consecutive_failures']}", flush=True)
+            
+        return is_connected
+    except Exception as e:
+        print(f"[Health Check] ❌ Exception in health check for {bot_id}: {e}", flush=True)
+        return False
+
+def health_monitoring_check():
+    all_bots = bot_manager.get_all_bots_data()
+    for bot_id, bot_data in all_bots:
+        check_bot_health(bot_data, bot_id)
+
 # ==============================================================================
-# <<< XỬ LÝ ẢNH (OCR) - PHẦN MỚI >>>
+# <<< XỬ LÝ ẢNH (OCR) >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
     """
@@ -120,17 +158,13 @@ def scan_image_for_prints(image_url):
         resp = requests.get(image_url, timeout=3)
         if resp.status_code != 200: return []
         
-        # Chuyển bytes thành ảnh OpenCV
         arr = np.asarray(bytearray(resp.content), dtype=np.uint8)
-        img = cv2.imdecode(arr, -1) # -1 để giữ màu (nếu cần) hoặc 0 để grayscale
+        img = cv2.imdecode(arr, -1)
         if img is None: return []
 
         height, width, _ = img.shape
-        # Karuta Drop thường có 3 hoặc 4 thẻ.
-        # Logic đơn giản: Chia chiều rộng thành 3 hoặc 4 phần bằng nhau.
-        # Nếu chiều rộng > 1000px thường là 3-4 thẻ.
         num_cards = 3 
-        if width > 1300: num_cards = 4 # Dự đoán sơ bộ
+        if width > 1300: num_cards = 4
         
         card_width = width // num_cards
         results = []
@@ -138,31 +172,22 @@ def scan_image_for_prints(image_url):
         print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột.", flush=True)
 
         for i in range(num_cards):
-            # Cắt lấy 1 thẻ
             x_start = i * card_width
             x_end = (i + 1) * card_width
             
-            # Cắt lấy phần đáy (nơi chứa Print/Gen) - Khoảng 18% dưới cùng
+            # Cắt lấy phần đáy (nơi chứa Print/Gen) - 15% dưới cùng
             y_start = int(height * 0.85) 
             crop_img = img[y_start:height, x_start:x_end]
 
-            # Xử lý ảnh để rõ chữ hơn (Grayscale -> Threshold)
             gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
-            # Threshold: Chuyển các pixel sáng thành trắng, tối thành đen để tách chữ
             _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV) 
 
-            # Dùng Tesseract đọc
-            # config: chỉ đọc số (digits) để tăng tốc và độ chính xác
             custom_config = r'--oem 3 --psm 6 outputbase digits'
             text = pytesseract.image_to_string(thresh, config=custom_config)
             
-            # Lọc lấy số đầu tiên tìm thấy
-            # Text thường có dạng: "79371 - 1" hoặc "1234 · 2"
             numbers = re.findall(r'\d+', text)
             
             if numbers:
-                # Số print thường là số lớn (ví dụ > 5), số edition là số nhỏ (1,2,3)
-                # Lấy số dài nhất hoặc số đầu tiên
                 print_num = int(numbers[0])
                 results.append((i, print_num))
                 print(f"[OCR LOG] 👁️ Thẻ {i+1}: Đọc được Print = {print_num} (Raw: '{text.strip()}')", flush=True)
@@ -176,7 +201,7 @@ def scan_image_for_prints(image_url):
         return []
 
 # ==============================================================================
-# <<< LOGIC NHẶT THẺ CẢI TIẾN >>>
+# <<< LOGIC NHẶT THẺ >>>
 # ==============================================================================
 async def handle_grab(bot, msg, bot_num):
     channel_id = msg.channel.id
@@ -184,23 +209,18 @@ async def handle_grab(bot, msg, bot_num):
     if not target_server: return
 
     bot_id_str = f'main_{bot_num}'
-    # Config cơ bản
     auto_grab = target_server.get(f'auto_grab_enabled_{bot_num}', False)
-    # Config OCR
     ocr_enabled = target_server.get(f'ocr_enabled_{bot_num}', False)
-    print_max_limit = target_server.get(f'print_threshold_{bot_num}', 1000) # Mặc định nhặt nếu print < 1000
+    print_max_limit = target_server.get(f'print_threshold_{bot_num}', 1000)
 
     if not auto_grab: return
 
-    final_choice = None # (emoji, delay, reason)
+    final_choice = None 
 
     # --- BƯỚC 1: CHECK TIM (NHANH) ---
-    # (Giữ logic cũ vì nó nhanh, không tốn resource)
-    start_time = time.monotonic()
     try:
         channel = bot.get_channel(int(channel_id))
         if channel:
-            # Chờ 1 chút để embed load xong hoàn toàn
             await asyncio.sleep(0.5) 
             async for msg_item in channel.history(limit=5):
                 if msg_item.author.id == int(karibbit_id) and msg_item.id > msg.id:
@@ -224,22 +244,17 @@ async def handle_grab(bot, msg, bot_num):
     except Exception as e:
         print(f"[GRAB] Lỗi check tim: {e}", flush=True)
 
-    # --- BƯỚC 2: CHECK PRINT (OCR - CHẬM HƠN CHÚT) ---
-    # Chỉ chạy nếu chưa tìm được thẻ theo tim VÀ tính năng OCR được bật
+    # --- BƯỚC 2: CHECK PRINT (OCR) ---
     if not final_choice and ocr_enabled and msg.embeds and msg.embeds[0].image:
         image_url = msg.embeds[0].image.url
-        # Chạy OCR trong thread riêng để không block bot
         print(f"[GRAB] 📷 Bắt đầu quét ảnh tìm Low Print (Max: {print_max_limit})...", flush=True)
         
         loop = asyncio.get_event_loop()
-        # Chạy hàm sync scan_image_for_prints trong executor
         ocr_results = await loop.run_in_executor(None, scan_image_for_prints, image_url)
         
-        # Tìm thẻ có Print thấp nhất và nhỏ hơn giới hạn
         valid_prints = [x for x in ocr_results if x[1] <= print_max_limit]
         
         if valid_prints:
-            # Lấy thẻ có print nhỏ nhất
             best_print_idx, best_print_val = min(valid_prints, key=lambda x: x[1])
             if best_print_idx < 4:
                 emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_print_idx]
@@ -256,7 +271,6 @@ async def handle_grab(bot, msg, bot_num):
             try:
                 target_msg = await msg.channel.fetch_message(msg.id)
                 await target_msg.add_reaction(emoji)
-                # Spam nhẹ nếu cần
                 ktb_id = target_server.get('ktb_channel_id')
                 if ktb_id:
                     ktb = bot.get_channel(int(ktb_id))
@@ -267,7 +281,7 @@ async def handle_grab(bot, msg, bot_num):
         asyncio.create_task(grab_action())
 
 
-# --- KHỞI TẠO BOT (Phần còn lại giống code cũ) ---
+# --- KHỞI TẠO BOT ---
 def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -298,7 +312,7 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
         bot_manager.remove_bot(bot_id_str)
         loop.close()
 
-# --- WEB SERVER (UI Updated for OCR) ---
+# --- WEB SERVER (UI) ---
 app = Flask(__name__)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -321,9 +335,17 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <h1>Shadow Network - OCR Edition</h1>
+    <div style="margin-bottom: 20px;">
+         <button id="add-server-btn" class="btn" style="background: #006400;"><i class="fas fa-plus"></i> Add Server</button>
+    </div>
     {% for server in servers %}
     <div class="panel" data-server-id="{{ server.id }}">
-        <h2>{{ server.name }}</h2>
+        <h2>{{ server.name }} <button class="btn delete-server" style="float:right; background:#8b0000; font-size:0.8em;">X</button></h2>
+        <div class="input-group">
+            <label>Channels:</label>
+            <input type="text" class="channel-input" data-field="main_channel_id" value="{{ server.main_channel_id or '' }}" placeholder="Main Channel ID">
+            <input type="text" class="channel-input" data-field="ktb_channel_id" value="{{ server.ktb_channel_id or '' }}" placeholder="KTB Channel ID">
+        </div>
         {% for bot in main_bots %}
         <div style="background: #1a1a1a; padding: 10px; margin-bottom: 10px; border-radius: 4px;">
             <h3>{{ bot.name }}</h3>
@@ -346,22 +368,40 @@ HTML_TEMPLATE = """
     {% endfor %}
     
     <script>
-        // JS xử lý API (Tương tự phiên bản cũ, thêm phần OCR)
-        document.querySelectorAll('.toggle-ocr').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const serverId = btn.closest('.panel').dataset.serverId;
-                const botId = btn.dataset.bot;
-                const printLimit = btn.parentElement.querySelector('.print-limit').value;
-                
-                await fetch('/api/ocr_toggle', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({server_id: serverId, node: botId, limit: printLimit})
-                });
-                location.reload();
+        async function post(url, data) {
+            await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
+            location.reload();
+        }
+        document.getElementById('add-server-btn').addEventListener('click', () => {
+            const name = prompt("Server Name:");
+            if(name) post('/api/add_server', {name: name});
+        });
+        document.querySelectorAll('.delete-server').forEach(btn => {
+            btn.addEventListener('click', () => {
+                if(confirm('Delete?')) post('/api/delete_server', {server_id: btn.closest('.panel').dataset.serverId});
             });
         });
-        // (Giữ các script xử lý toggle-grab cũ của bạn ở đây)
+        document.querySelectorAll('.channel-input').forEach(inp => {
+            inp.addEventListener('change', () => {
+                const sid = inp.closest('.panel').dataset.serverId;
+                const field = inp.dataset.field;
+                fetch('/api/update_server_field', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({server_id: sid, [field]: inp.value}) });
+            });
+        });
+        document.querySelectorAll('.toggle-grab').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const p = btn.closest('.panel');
+                const min = btn.parentElement.querySelector('.heart-min').value;
+                const max = btn.parentElement.querySelector('.heart-max').value;
+                post('/api/harvest_toggle', {server_id: p.dataset.serverId, node: btn.dataset.bot, threshold: min, max_threshold: max});
+            });
+        });
+        document.querySelectorAll('.toggle-ocr').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const limit = btn.parentElement.querySelector('.print-limit').value;
+                post('/api/ocr_toggle', {server_id: btn.closest('.panel').dataset.serverId, node: btn.dataset.bot, limit: limit});
+            });
+        });
     </script>
 </body>
 </html>
@@ -380,12 +420,10 @@ def api_ocr_toggle():
         node = str(data['node'])
         key_enable = f'ocr_enabled_{node}'
         key_limit = f'print_threshold_{node}'
-        
         server[key_enable] = not server.get(key_enable, False)
         server[key_limit] = int(data.get('limit', 1000))
         save_settings()
     return jsonify({'status': 'success'})
-
 
 @app.route("/api/add_server", methods=['POST'])
 def api_add_server():
@@ -398,16 +436,17 @@ def api_add_server():
         new_server[f'auto_grab_enabled_{bot_num}'] = False
         new_server[f'heart_threshold_{bot_num}'] = 50
         new_server[f'max_heart_threshold_{bot_num}'] = 99999
-        # Khởi tạo giá trị mặc định cho OCR
         new_server[f'ocr_enabled_{bot_num}'] = False
         new_server[f'print_threshold_{bot_num}'] = 1000
     servers.append(new_server)
+    save_settings()
     return jsonify({'status': 'success', 'message': f'✅ Server "{name}" đã được thêm.', 'reload': True})
 
 @app.route("/api/delete_server", methods=['POST'])
 def api_delete_server():
     server_id = request.json.get('server_id')
     servers[:] = [s for s in servers if s.get('id') != server_id]
+    save_settings()
     return jsonify({'status': 'success', 'message': f'🗑️ Server đã được xóa.', 'reload': True})
 
 def find_server(server_id): return next((s for s in servers if s.get('id') == server_id), None)
@@ -418,145 +457,42 @@ def api_update_server_field():
     server = find_server(data.get('server_id'))
     if not server: return jsonify({'status': 'error', 'message': 'Không tìm thấy server.'}), 404
     for key, value in data.items():
-        if key != 'server_id':
-            server[key] = value
-    return jsonify({'status': 'success', 'message': f'🔧 Settings updated for {server.get("name", "server")}.'})
+        if key != 'server_id': server[key] = value
+    save_settings()
+    return jsonify({'status': 'success'})
 
 @app.route("/api/harvest_toggle", methods=['POST'])
 def api_harvest_toggle():
     data = request.json
     server, node_str = find_server(data.get('server_id')), data.get('node')
-    if not server or not node_str: return jsonify({'status': 'error', 'message': 'Yêu cầu không hợp lệ.'}), 400
+    if not server or not node_str: return jsonify({'status': 'error'}), 400
     node = str(node_str)
-    grab_key, threshold_key, max_threshold_key = f'auto_grab_enabled_{node}', f'heart_threshold_{node}', f'max_heart_threshold_{node}'
+    grab_key = f'auto_grab_enabled_{node}'
     server[grab_key] = not server.get(grab_key, False)
     try:
-        server[threshold_key] = int(data.get('threshold', 50))
-        server[max_threshold_key] = int(data.get('max_threshold', 99999))
-    except (ValueError, TypeError):
-        server[threshold_key] = 50
-        server[max_threshold_key] = 99999
-    status_msg = 'ENABLED' if server[grab_key] else 'DISABLED'
-    return jsonify({'status': 'success', 'message': f"🎯 Card Grab cho {get_bot_name(f'main_{node}')} đã {status_msg}."})
-
-@app.route("/api/watermelon_toggle", methods=['POST'])
-def api_watermelon_toggle():
-    node = request.json.get('node')
-    if node not in bot_states["watermelon_grab"]: return jsonify({'status': 'error', 'message': 'Invalid bot node.'}), 404
-    bot_states["watermelon_grab"][node] = not bot_states["watermelon_grab"].get(node, False)
-    status_msg = 'ENABLED' if bot_states["watermelon_grab"][node] else 'DISABLED'
-    return jsonify({'status': 'success', 'message': f"🎀 Global Watermelon Grab đã {status_msg} cho {get_bot_name(node)}."})
-
-@app.route("/api/broadcast_toggle", methods=['POST'])
-def api_broadcast_toggle():
-    data = request.json
-    server = find_server(data.get('server_id'))
-    if not server: return jsonify({'status': 'error', 'message': 'Không tìm thấy server.'}), 404
-    server['spam_enabled'] = not server.get('spam_enabled', False)
-    server['spam_message'] = data.get("message", "").strip()
-    if server['spam_enabled'] and (not server['spam_message'] or not server.get('spam_channel_id')):
-        server['spam_enabled'] = False
-        return jsonify({'status': 'error', 'message': f'❌ Cần có message/channel spam cho {server["name"]}.'})
-    status_msg = 'ENABLED' if server['spam_enabled'] else 'DISABLED'
-    return jsonify({'status': 'success', 'message': f"📢 Auto Broadcast đã {status_msg} cho {server['name']}."})
-
-@app.route("/api/bot_reboot_toggle", methods=['POST'])
-def api_bot_reboot_toggle():
-    data = request.json
-    bot_id, delay = data.get('bot_id'), int(data.get("delay", 3600))
-    if not re.match(r"main_\d+", bot_id): return jsonify({'status': 'error', 'message': '❌ Invalid Bot ID Format.'}), 400
-    settings = bot_states["reboot_settings"].get(bot_id)
-    if not settings: return jsonify({'status': 'error', 'message': '❌ Invalid Bot ID.'}), 400
-    settings.update({'enabled': not settings.get('enabled', False), 'delay': delay, 'failure_count': 0})
-    if settings['enabled']:
-        settings['next_reboot_time'] = time.time() + delay
-        msg = f"🔄 Safe Auto-Reboot ENABLED cho {get_bot_name(bot_id)} (mỗi {delay}s)"
-    else:
-        msg = f"🛑 Auto-Reboot DISABLED cho {get_bot_name(bot_id)}"
-    return jsonify({'status': 'success', 'message': msg})
-
-@app.route("/api/toggle_bot_state", methods=['POST'])
-def api_toggle_bot_state():
-    target = request.json.get('target')
-    if target in bot_states["active"]:
-        bot_states["active"][target] = not bot_states["active"][target]
-        state_text = "🟢 ONLINE" if bot_states["active"][target] else "🔴 OFFLINE"
-        return jsonify({'status': 'success', 'message': f"Bot {get_bot_name(target)} đã được set thành {state_text}"})
-    return jsonify({'status': 'error', 'message': 'Không tìm thấy target.'}), 404
-
-@app.route("/api/update_global_harvest_settings", methods=['POST'])
-def api_update_global_harvest_settings():
-    data = request.get_json()
-    thresholds_data = data.get('thresholds', {})
-    if not thresholds_data: return jsonify({'status': 'error', 'message': 'Không có dữ liệu.'}), 400
-    updated_count = 0
-    for server in servers:
-        for bot_id, new_thresholds in thresholds_data.items():
-            try:
-                bot_num_str = bot_id.split('_')[1]
-                server[f'heart_threshold_{bot_num_str}'] = int(new_thresholds.get('min', 50))
-                server[f'max_heart_threshold_{bot_num_str}'] = int(new_thresholds.get('max', 99999))
-            except: continue
-        updated_count += 1
+        server[f'heart_threshold_{node}'] = int(data.get('threshold', 50))
+        server[f'max_heart_threshold_{node}'] = int(data.get('max_threshold', 99999))
+    except: pass
     save_settings()
-    return jsonify({'status': 'success', 'message': f'✅ Đã cập nhật cho {updated_count} server.', 'reload': True})
+    return jsonify({'status': 'success'})
 
 @app.route("/api/save_settings", methods=['POST'])
-def api_save_settings(): save_settings(); return jsonify({'status': 'success', 'message': '💾 Settings saved.'})
-
-@app.route("/status")
-def status_endpoint():
-    now = time.time()
-    def get_bot_status_list(bot_info_list, type_prefix):
-        status_list = []
-        for bot_id, data in bot_info_list:
-            failures = bot_states["health_stats"].get(bot_id, {}).get('consecutive_failures', 0)
-            health_status = 'bad' if failures >= 3 else 'warning' if failures > 0 else 'good'
-            status_list.append({
-                "name": get_bot_name(bot_id), "status": data.get('instance') is not None, "reboot_id": bot_id,
-                "is_active": bot_states["active"].get(bot_id, False), "type": type_prefix, "health_status": health_status,
-                "is_rebooting": bot_manager.is_rebooting(bot_id)
-            })
-        return sorted(status_list, key=lambda x: int(x['reboot_id'].split('_')[1]))
-    
-    bot_statuses = {
-        "main_bots": get_bot_status_list(bot_manager.get_main_bots_info(), "main"),
-        "sub_accounts": get_bot_status_list(bot_manager.get_sub_bots_info(), "sub")
-    }
-    reboot_settings_copy = bot_states["reboot_settings"].copy()
-    for bot_id, settings in reboot_settings_copy.items():
-        settings['countdown'] = max(0, settings.get('next_reboot_time', 0) - now) if settings.get('enabled') else 0
-    
-    return jsonify({
-        'bot_reboot_settings': reboot_settings_copy, 
-        'bot_statuses': bot_statuses, 
-        'server_start_time': server_start_time, 
-        'servers': servers, 
-        'watermelon_grab_states': bot_states["watermelon_grab"]
-    })
-
-# ... (Phần trên giữ nguyên) ...
+def api_save_settings(): save_settings(); return jsonify({'status': 'success'})
 
 if __name__ == "__main__":
     print("🚀 Shadow Grabber - OCR Edition Starting...", flush=True)
     load_settings()
 
     # CHỈ KHỞI CHẠY BOT CHÍNH (Bot Nhặt)
-    # Không chạy vòng lặp token phụ nữa để tiết kiệm RAM
     for i, token in enumerate(main_tokens):
         if token.strip():
-            # is_main=True để kích hoạt tính năng nhặt
             threading.Thread(target=initialize_and_run_bot, args=(token.strip(), f"main_{i+1}", True), daemon=True).start()
     
     print("⚠️ Chế độ: CHỈ NHẶT (GRAB ONLY) - Đã tắt Spam Sub-bots", flush=True)
 
-    # Vẫn chạy các luồng nền (Health check, Auto Reboot)
     threading.Thread(target=periodic_task, args=(1800, save_settings, "Save"), daemon=True).start()
     threading.Thread(target=periodic_task, args=(300, health_monitoring_check, "Health"), daemon=True).start()
     
-    # KHÔNG CHẠY start_optimized_spam_system()
-    # threading.Thread(target=auto_reboot_loop, daemon=True).start() # Vẫn nên giữ reboot để an toàn
-
     port = int(os.environ.get("PORT", 10000))
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
