@@ -535,15 +535,28 @@ def status_endpoint():
         'watermelon_grab_states': bot_states["watermelon_grab"]
     })
 
+# ... (Phần trên giữ nguyên) ...
+
 if __name__ == "__main__":
+    print("🚀 Shadow Grabber - OCR Edition Starting...", flush=True)
     load_settings()
-    # Khởi chạy bot main
+
+    # CHỈ KHỞI CHẠY BOT CHÍNH (Bot Nhặt)
+    # Không chạy vòng lặp token phụ nữa để tiết kiệm RAM
     for i, token in enumerate(main_tokens):
         if token.strip():
+            # is_main=True để kích hoạt tính năng nhặt
             threading.Thread(target=initialize_and_run_bot, args=(token.strip(), f"main_{i+1}", True), daemon=True).start()
     
-    # Khởi chạy bot sub (nếu có)
+    print("⚠️ Chế độ: CHỈ NHẶT (GRAB ONLY) - Đã tắt Spam Sub-bots", flush=True)
+
+    # Vẫn chạy các luồng nền (Health check, Auto Reboot)
+    threading.Thread(target=periodic_task, args=(1800, save_settings, "Save"), daemon=True).start()
+    threading.Thread(target=periodic_task, args=(300, health_monitoring_check, "Health"), daemon=True).start()
     
+    # KHÔNG CHẠY start_optimized_spam_system()
+    # threading.Thread(target=auto_reboot_loop, daemon=True).start() # Vẫn nên giữ reboot để an toàn
+
     port = int(os.environ.get("PORT", 10000))
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
