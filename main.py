@@ -308,20 +308,28 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     async def on_message(msg):
         if not is_main: return
         
-        # DEBUG: In ra mọi message có "dropping"
+        # --- [BƯỚC LỌC QUAN TRỌNG NHẤT] ---
+        # Kiểm tra xem kênh hiện tại (msg.channel.id) có nằm trong danh sách web không
+        # Lưu ý: So sánh string vì trong config lưu dạng string
+        target_server = next((s for s in servers if s.get('main_channel_id') == str(msg.channel.id)), None)
+        
+        # Nếu KHÔNG tìm thấy config cho kênh này -> DỪNG NGAY LẬP TỨC (Không in log rác)
+        if not target_server:
+            return
+
+        # --- NẾU ĐÚNG KÊNH CẦN THEO DÕI THÌ MỚI CHẠY TIẾP ---
+        
+        # In log debug CHỈ KHI đúng kênh quan tâm
         if "dropping" in msg.content.lower():
-            print(f"[DEBUG] 👀 Message có 'dropping' từ {msg.author.name} (ID: {msg.author.id}) | Kênh: {msg.channel.id}", flush=True)
-            print(f"[DEBUG] 📝 Content: {msg.content[:100]}...", flush=True)
+            print(f"[DEBUG] 👀 Bot {bot_id_str} thấy Drop tại kênh ĐÚNG {msg.channel.id}", flush=True)
 
         try:
-            # Check cả Karuta VÀ Karibbit
             if (msg.author.id == int(karuta_id) or msg.author.id == int(karibbit_id)) and "dropping" in msg.content.lower():
-                print(f"[DEBUG] ✅ PHÁT HIỆN DROP từ {msg.author.name}! Đang gọi hàm xử lý...", flush=True)
+                print(f"[DEBUG] ✅ PHÁT HIỆN DROP CHUẨN! Đang xử lý...", flush=True)
                 await handle_grab(bot, msg, bot_identifier)
         except Exception as e:
             print(f"[Err] {e}", flush=True)
             traceback.print_exc()
-
     try:
         # Thêm bot vào manager TRƯỚC khi start
         bot_manager.add_bot(bot_id_str, {'instance': bot, 'loop': loop})
