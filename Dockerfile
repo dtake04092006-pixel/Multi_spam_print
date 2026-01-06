@@ -1,5 +1,5 @@
 # Sử dụng Python 3.10 trên nền Linux nhẹ (Slim)
-FROM python:3.10-slim
+FROM python:3.11.9-slim
 
 # Thiết lập thư mục làm việc
 WORKDIR /app
