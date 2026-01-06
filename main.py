@@ -213,14 +213,20 @@ def scan_image_for_prints(image_url):
 async def handle_grab(bot, msg, bot_num):
     channel_id = msg.channel.id
     target_server = next((s for s in servers if s.get('main_channel_id') == str(channel_id)), None)
-    if not target_server: return
+    if not target_server: 
+        print(f"[GRAB] ⚠️ Kênh {channel_id} không được cấu hình trong hệ thống", flush=True)
+        return
 
     bot_id_str = f'main_{bot_num}'
     auto_grab = target_server.get(f'auto_grab_enabled_{bot_num}', False)
     ocr_enabled = target_server.get(f'ocr_enabled_{bot_num}', False)
     print_max_limit = target_server.get(f'print_threshold_{bot_num}', 1000)
 
-    if not auto_grab: return
+    if not auto_grab: 
+        print(f"[GRAB] ⚠️ Auto grab CHƯA BẬT cho Bot {bot_num}", flush=True)
+        return
+
+    print(f"[GRAB] 🎯 Bắt đầu xử lý drop cho Bot {bot_num} | OCR: {ocr_enabled} | Print limit: {print_max_limit}", flush=True)
 
     final_choice = None 
 
@@ -228,8 +234,14 @@ async def handle_grab(bot, msg, bot_num):
     try:
         channel = bot.get_channel(int(channel_id))
         if channel:
-            await asyncio.sleep(0.5) 
+            await asyncio.sleep(0.8)  # Tăng delay để tránh race condition
+            
+            # Chỉ fetch 1 lần duy nhất
+            recent_messages = []
             async for msg_item in channel.history(limit=5):
+                recent_messages.append(msg_item)
+            
+            for msg_item in recent_messages:
                 if msg_item.author.id == int(karibbit_id) and msg_item.id > msg.id:
                     if not msg_item.embeds: continue
                     desc = msg_item.embeds[0].description
@@ -247,9 +259,11 @@ async def handle_grab(bot, msg, bot_num):
                         best_idx, best_hearts = max(valid_cards, key=lambda x: x[1])
                         emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
                         final_choice = (emoji, 0.8, f"Hearts {best_hearts}")
+                        print(f"[GRAB] 💖 Tìm thấy thẻ có {best_hearts} hearts tại vị trí {best_idx+1}", flush=True)
                         break
     except Exception as e:
         print(f"[GRAB] Lỗi check tim: {e}", flush=True)
+        traceback.print_exc()
 
     # --- BƯỚC 2: CHECK PRINT (OCR) ---
     if not final_choice and ocr_enabled and msg.embeds and msg.embeds[0].image:
@@ -308,12 +322,15 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     async def on_message(msg):
         if not is_main: return
         
-        if msg.author.id == int(karuta_id):
-            print(f"[DEBUG] 👀 Thấy Karuta chat tại kênh {msg.channel.id} | Content: {msg.content[:50]}...", flush=True)
+        # DEBUG: In ra mọi message có "dropping"
+        if "dropping" in msg.content.lower():
+            print(f"[DEBUG] 👀 Message có 'dropping' từ {msg.author.name} (ID: {msg.author.id}) | Kênh: {msg.channel.id}", flush=True)
+            print(f"[DEBUG] 📝 Content: {msg.content[:100]}...", flush=True)
 
         try:
-            if msg.author.id == int(karuta_id) and "dropping" in msg.content.lower():
-                print(f"[DEBUG] ✅ PHÁT HIỆN DROP! Đang gọi hàm xử lý...", flush=True)
+            # Check cả Karuta VÀ Karibbit
+            if (msg.author.id == int(karuta_id) or msg.author.id == int(karibbit_id)) and "dropping" in msg.content.lower():
+                print(f"[DEBUG] ✅ PHÁT HIỆN DROP từ {msg.author.name}! Đang gọi hàm xử lý...", flush=True)
                 await handle_grab(bot, msg, bot_identifier)
         except Exception as e:
             print(f"[Err] {e}", flush=True)
