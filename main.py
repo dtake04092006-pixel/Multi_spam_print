@@ -386,7 +386,154 @@ def api_ocr_toggle():
         save_settings()
     return jsonify({'status': 'success'})
 
-# ... (Các API cũ giữ nguyên) ...
+
+@app.route("/api/add_server", methods=['POST'])
+def api_add_server():
+    name = request.json.get('name')
+    if not name: return jsonify({'status': 'error', 'message': 'Tên server là bắt buộc.'}), 400
+    new_server = {"id": f"server_{uuid.uuid4().hex}", "name": name}
+    main_bots_count = len([t for t in main_tokens if t.strip()])
+    for i in range(main_bots_count):
+        bot_num = i + 1
+        new_server[f'auto_grab_enabled_{bot_num}'] = False
+        new_server[f'heart_threshold_{bot_num}'] = 50
+        new_server[f'max_heart_threshold_{bot_num}'] = 99999
+        # Khởi tạo giá trị mặc định cho OCR
+        new_server[f'ocr_enabled_{bot_num}'] = False
+        new_server[f'print_threshold_{bot_num}'] = 1000
+    servers.append(new_server)
+    return jsonify({'status': 'success', 'message': f'✅ Server "{name}" đã được thêm.', 'reload': True})
+
+@app.route("/api/delete_server", methods=['POST'])
+def api_delete_server():
+    server_id = request.json.get('server_id')
+    servers[:] = [s for s in servers if s.get('id') != server_id]
+    return jsonify({'status': 'success', 'message': f'🗑️ Server đã được xóa.', 'reload': True})
+
+def find_server(server_id): return next((s for s in servers if s.get('id') == server_id), None)
+
+@app.route("/api/update_server_field", methods=['POST'])
+def api_update_server_field():
+    data = request.json
+    server = find_server(data.get('server_id'))
+    if not server: return jsonify({'status': 'error', 'message': 'Không tìm thấy server.'}), 404
+    for key, value in data.items():
+        if key != 'server_id':
+            server[key] = value
+    return jsonify({'status': 'success', 'message': f'🔧 Settings updated for {server.get("name", "server")}.'})
+
+@app.route("/api/harvest_toggle", methods=['POST'])
+def api_harvest_toggle():
+    data = request.json
+    server, node_str = find_server(data.get('server_id')), data.get('node')
+    if not server or not node_str: return jsonify({'status': 'error', 'message': 'Yêu cầu không hợp lệ.'}), 400
+    node = str(node_str)
+    grab_key, threshold_key, max_threshold_key = f'auto_grab_enabled_{node}', f'heart_threshold_{node}', f'max_heart_threshold_{node}'
+    server[grab_key] = not server.get(grab_key, False)
+    try:
+        server[threshold_key] = int(data.get('threshold', 50))
+        server[max_threshold_key] = int(data.get('max_threshold', 99999))
+    except (ValueError, TypeError):
+        server[threshold_key] = 50
+        server[max_threshold_key] = 99999
+    status_msg = 'ENABLED' if server[grab_key] else 'DISABLED'
+    return jsonify({'status': 'success', 'message': f"🎯 Card Grab cho {get_bot_name(f'main_{node}')} đã {status_msg}."})
+
+@app.route("/api/watermelon_toggle", methods=['POST'])
+def api_watermelon_toggle():
+    node = request.json.get('node')
+    if node not in bot_states["watermelon_grab"]: return jsonify({'status': 'error', 'message': 'Invalid bot node.'}), 404
+    bot_states["watermelon_grab"][node] = not bot_states["watermelon_grab"].get(node, False)
+    status_msg = 'ENABLED' if bot_states["watermelon_grab"][node] else 'DISABLED'
+    return jsonify({'status': 'success', 'message': f"🎀 Global Watermelon Grab đã {status_msg} cho {get_bot_name(node)}."})
+
+@app.route("/api/broadcast_toggle", methods=['POST'])
+def api_broadcast_toggle():
+    data = request.json
+    server = find_server(data.get('server_id'))
+    if not server: return jsonify({'status': 'error', 'message': 'Không tìm thấy server.'}), 404
+    server['spam_enabled'] = not server.get('spam_enabled', False)
+    server['spam_message'] = data.get("message", "").strip()
+    if server['spam_enabled'] and (not server['spam_message'] or not server.get('spam_channel_id')):
+        server['spam_enabled'] = False
+        return jsonify({'status': 'error', 'message': f'❌ Cần có message/channel spam cho {server["name"]}.'})
+    status_msg = 'ENABLED' if server['spam_enabled'] else 'DISABLED'
+    return jsonify({'status': 'success', 'message': f"📢 Auto Broadcast đã {status_msg} cho {server['name']}."})
+
+@app.route("/api/bot_reboot_toggle", methods=['POST'])
+def api_bot_reboot_toggle():
+    data = request.json
+    bot_id, delay = data.get('bot_id'), int(data.get("delay", 3600))
+    if not re.match(r"main_\d+", bot_id): return jsonify({'status': 'error', 'message': '❌ Invalid Bot ID Format.'}), 400
+    settings = bot_states["reboot_settings"].get(bot_id)
+    if not settings: return jsonify({'status': 'error', 'message': '❌ Invalid Bot ID.'}), 400
+    settings.update({'enabled': not settings.get('enabled', False), 'delay': delay, 'failure_count': 0})
+    if settings['enabled']:
+        settings['next_reboot_time'] = time.time() + delay
+        msg = f"🔄 Safe Auto-Reboot ENABLED cho {get_bot_name(bot_id)} (mỗi {delay}s)"
+    else:
+        msg = f"🛑 Auto-Reboot DISABLED cho {get_bot_name(bot_id)}"
+    return jsonify({'status': 'success', 'message': msg})
+
+@app.route("/api/toggle_bot_state", methods=['POST'])
+def api_toggle_bot_state():
+    target = request.json.get('target')
+    if target in bot_states["active"]:
+        bot_states["active"][target] = not bot_states["active"][target]
+        state_text = "🟢 ONLINE" if bot_states["active"][target] else "🔴 OFFLINE"
+        return jsonify({'status': 'success', 'message': f"Bot {get_bot_name(target)} đã được set thành {state_text}"})
+    return jsonify({'status': 'error', 'message': 'Không tìm thấy target.'}), 404
+
+@app.route("/api/update_global_harvest_settings", methods=['POST'])
+def api_update_global_harvest_settings():
+    data = request.get_json()
+    thresholds_data = data.get('thresholds', {})
+    if not thresholds_data: return jsonify({'status': 'error', 'message': 'Không có dữ liệu.'}), 400
+    updated_count = 0
+    for server in servers:
+        for bot_id, new_thresholds in thresholds_data.items():
+            try:
+                bot_num_str = bot_id.split('_')[1]
+                server[f'heart_threshold_{bot_num_str}'] = int(new_thresholds.get('min', 50))
+                server[f'max_heart_threshold_{bot_num_str}'] = int(new_thresholds.get('max', 99999))
+            except: continue
+        updated_count += 1
+    save_settings()
+    return jsonify({'status': 'success', 'message': f'✅ Đã cập nhật cho {updated_count} server.', 'reload': True})
+
+@app.route("/api/save_settings", methods=['POST'])
+def api_save_settings(): save_settings(); return jsonify({'status': 'success', 'message': '💾 Settings saved.'})
+
+@app.route("/status")
+def status_endpoint():
+    now = time.time()
+    def get_bot_status_list(bot_info_list, type_prefix):
+        status_list = []
+        for bot_id, data in bot_info_list:
+            failures = bot_states["health_stats"].get(bot_id, {}).get('consecutive_failures', 0)
+            health_status = 'bad' if failures >= 3 else 'warning' if failures > 0 else 'good'
+            status_list.append({
+                "name": get_bot_name(bot_id), "status": data.get('instance') is not None, "reboot_id": bot_id,
+                "is_active": bot_states["active"].get(bot_id, False), "type": type_prefix, "health_status": health_status,
+                "is_rebooting": bot_manager.is_rebooting(bot_id)
+            })
+        return sorted(status_list, key=lambda x: int(x['reboot_id'].split('_')[1]))
+    
+    bot_statuses = {
+        "main_bots": get_bot_status_list(bot_manager.get_main_bots_info(), "main"),
+        "sub_accounts": get_bot_status_list(bot_manager.get_sub_bots_info(), "sub")
+    }
+    reboot_settings_copy = bot_states["reboot_settings"].copy()
+    for bot_id, settings in reboot_settings_copy.items():
+        settings['countdown'] = max(0, settings.get('next_reboot_time', 0) - now) if settings.get('enabled') else 0
+    
+    return jsonify({
+        'bot_reboot_settings': reboot_settings_copy, 
+        'bot_statuses': bot_statuses, 
+        'server_start_time': server_start_time, 
+        'servers': servers, 
+        'watermelon_grab_states': bot_states["watermelon_grab"]
+    })
 
 if __name__ == "__main__":
     load_settings()
