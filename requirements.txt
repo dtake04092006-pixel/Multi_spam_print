@@ -1,0 +1,9 @@
+discord.py-self==1.9.2
+flask
+python-dotenv
+requests
+waitress
+# Thư viện xử lý ảnh và OCR
+opencv-python-headless
+pytesseract
+numpy
