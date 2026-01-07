@@ -1,9 +1,10 @@
 import discord, asyncio, threading, time, os, re, requests, json, random, traceback, uuid
 from flask import Flask, request, render_template_string, jsonify
 from dotenv import load_dotenv
-import cv2
 import numpy as np
 import pytesseract
+from PIL import Image, ImageOps, ImageEnhance # <--- Thư viện xử lý ảnh mới
+import io # <--- Để xử lý ảnh trên RAM
 
 # --- CẤU HÌNH OCR ---
 pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
@@ -153,49 +154,72 @@ def health_monitoring_check():
         check_bot_health(bot_data, bot_id)
 
 # ==============================================================================
-# <<< XỬ LÝ ẢNH (OCR) >>>
+# <<< XỬ LÝ ẢNH (OCR) - PHIÊN BẢN PIL (CHUẨN LOGIC KARUTA SNIPER) >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
-    """
-    Tải ảnh, cắt ảnh thành 3 hoặc 4 phần, đọc số Print ở dưới cùng.
-    Trả về: List [(index_thẻ, số_print), ...]
-    """
     print(f"[OCR LOG] 📥 Đang tải ảnh từ URL...", flush=True)
     try:
-        resp = requests.get(image_url, timeout=3)
+        resp = requests.get(image_url, timeout=5)
         if resp.status_code != 200: return []
         
-        arr = np.asarray(bytearray(resp.content), dtype=np.uint8)
-        img = cv2.imdecode(arr, -1)
-        if img is None: return []
-
-        height, width, _ = img.shape
+        # Đọc ảnh trực tiếp từ RAM (không lưu file)
+        img = Image.open(io.BytesIO(resp.content))
+        
+        width, height = img.size
+        
+        # Logic xác định số lượng thẻ dựa trên chiều rộng ảnh
+        # Ảnh 3 thẻ thường rộng ~900px, 4 thẻ ~1200px
         num_cards = 3 
-        if width > 1300: num_cards = 4
+        if width > 1000: num_cards = 4
         
         card_width = width // num_cards
         results = []
 
-        print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột.", flush=True)
+        print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột (PIL Mode).", flush=True)
 
         for i in range(num_cards):
-            x_start = i * card_width
-            x_end = (i + 1) * card_width
+            # 1. Xác định tọa độ cắt thẻ
+            left = i * card_width
+            right = (i + 1) * card_width
+            top = 0
+            bottom = height
             
-            # Cắt lấy phần đáy (nơi chứa Print/Gen) - 15% dưới cùng
-            y_start = int(height * 0.85) 
-            crop_img = img[y_start:height, x_start:x_end]
-
-            gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
-            _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV) 
-
-            custom_config = r'--oem 3 --psm 6 outputbase digits'
-            text = pytesseract.image_to_string(thresh, config=custom_config)
+            # 2. Cắt vùng chứa số Print (Phần đáy thẻ)
+            # Theo kinh nghiệm và code tham khảo, print nằm ở khoảng 13-15% dưới cùng
+            print_crop_top = int(height * 0.86) # Lấy từ 86% đổ xuống
             
+            # Cắt lấy phần Print của từng thẻ
+            # crop((left, top, right, bottom))
+            crop_img = img.crop((left, print_crop_top, right, bottom))
+
+            # 3. Xử lý ảnh để rõ số (Pre-processing)
+            # Chuyển sang thang độ xám (Grayscale)
+            crop_img = crop_img.convert('L')
+            
+            # Tăng độ tương phản (Contrast)
+            enhancer = ImageEnhance.Contrast(crop_img)
+            crop_img = enhancer.enhance(2.0) # Tăng gấp đôi độ tương phản
+            
+            # Nghịch đảo màu (Invert) - Số trắng nền đen -> Số đen nền trắng (Tesseract thích cái này)
+            crop_img = ImageOps.invert(crop_img)
+
+            # 4. Config Tesseract chuyên dụng cho số (Giống code tham khảo)
+            # --psm 7: Coi ảnh là 1 dòng văn bản duy nhất (Rất quan trọng cho số Print)
+            # whitelist: Chỉ cho phép đọc số
+            custom_config = r'--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
+            
+            text = pytesseract.image_to_string(crop_img, config=custom_config)
+            
+            # Lọc lấy số (Đôi khi nó đọc ra cả số Edition bên cạnh, ví dụ: 79371 1)
+            # Ta lấy số lớn nhất vì Print luôn > Edition
             numbers = re.findall(r'\d+', text)
             
             if numbers:
-                print_num = int(numbers[0])
+                # Chuyển list string thành list int
+                int_numbers = [int(n) for n in numbers]
+                # Số Print thường là số lớn nhất trong đống đó
+                print_num = max(int_numbers)
+                
                 results.append((i, print_num))
                 print(f"[OCR LOG] 👁️ Thẻ {i+1}: Đọc được Print = {print_num} (Raw: '{text.strip()}')", flush=True)
             else:
@@ -205,6 +229,7 @@ def scan_image_for_prints(image_url):
 
     except Exception as e:
         print(f"[OCR LOG] ❌ Lỗi xử lý ảnh: {e}", flush=True)
+        traceback.print_exc()
         return []
 
 # ==============================================================================
