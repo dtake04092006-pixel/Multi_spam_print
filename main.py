@@ -441,7 +441,7 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    bot = discord.Client(self_bot=True, heartbeat_timeout=30.0, guild_subscriptions=False)
+    bot = discord.Client(self_bot=True, heartbeat_timeout=60.0, guild_subscriptions=False)
     
     try: bot_identifier = int(bot_id_str.split('_')[1])
     except: bot_identifier = 99
