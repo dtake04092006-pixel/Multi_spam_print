@@ -7,6 +7,7 @@ from PIL import Image, ImageOps, ImageEnhance
 import io
 
 # --- CẤU HÌNH OCR ---
+# Đường dẫn tesseract trên Render (Linux)
 pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
 
 load_dotenv()
@@ -153,7 +154,7 @@ def health_monitoring_check():
         check_bot_health(bot_data, bot_id)
 
 # ==============================================================================
-# <<< XỬ LÝ ẢNH (OCR) - DÙNG PIL & LOGIC CHUẨN >>>
+# <<< XỬ LÝ ẢNH (OCR) - PHIÊN BẢN PIL (CHUẨN KARUTA SNIPER) >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
     print(f"[OCR LOG] 📥 Đang tải ảnh từ URL...", flush=True)
@@ -161,48 +162,56 @@ def scan_image_for_prints(image_url):
         resp = requests.get(image_url, timeout=5)
         if resp.status_code != 200: return []
         
-        # Dùng PIL để mở ảnh từ RAM
+        # Dùng PIL để mở ảnh từ RAM (BytesIO) -> Nhanh hơn lưu file
         img = Image.open(io.BytesIO(resp.content))
         width, height = img.size
         
-        # Xác định số lượng thẻ
+        # Xác định số lượng thẻ (3 hay 4) dựa trên chiều rộng ảnh
         num_cards = 3 
         if width > 1000: num_cards = 4
         
         card_width = width // num_cards
         results = []
 
-        print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột.", flush=True)
+        print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột (PIL Mode).", flush=True)
 
         for i in range(num_cards):
             left = i * card_width
             right = (i + 1) * card_width
             
-            # Cắt phần đáy chứa Print (khoảng 14% dưới cùng)
-            # Tọa độ này tránh được tên Anime ở trên
+            # Cắt phần đáy chứa Print (lấy khoảng 14% dưới cùng)
+            # Tọa độ này giúp né tên Anime/Character ở trên
             print_crop_top = int(height * 0.86) 
             
             # Cắt ảnh: (left, top, right, bottom)
             crop_img = img.crop((left, print_crop_top, right, height))
 
-            # Xử lý ảnh (Pre-processing) giống code tham khảo
-            crop_img = crop_img.convert('L') # Chuyển xám
+            # --- [LOGIC XỬ LÝ MÀU CHUẨN] ---
+            # 1. Chuyển sang thang độ xám (Grayscale)
+            crop_img = crop_img.convert('L') 
             
+            # 2. Tăng độ tương phản (Contrast) lên gấp đôi
             enhancer = ImageEnhance.Contrast(crop_img)
-            crop_img = enhancer.enhance(2.0) # Tăng tương phản
+            crop_img = enhancer.enhance(2.0) 
             
-            crop_img = ImageOps.invert(crop_img) # Đảo màu (Trắng/Đen -> Đen/Trắng)
+            # 3. Đảo màu (Invert): Chữ Trắng/Nền Đen -> Chữ Đen/Nền Trắng
+            # Tesseract đọc số đen trên nền trắng cực tốt
+            crop_img = ImageOps.invert(crop_img)
 
-            # Config Tesseract chuẩn cho số (psm 7)
+            # --- [CONFIG TESSERACT CHUẨN] ---
+            # --psm 7: Coi ảnh là 1 dòng văn bản duy nhất (Single line)
+            # whitelist: Chỉ cho phép đọc số, loại bỏ nhiễu chữ cái
             custom_config = r'--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
+            
             text = pytesseract.image_to_string(crop_img, config=custom_config)
             
-            # Lọc lấy số
+            # Lọc lấy số từ kết quả
             numbers = re.findall(r'\d+', text)
             
             if numbers:
-                # Lấy số lớn nhất (Print)
+                # Chuyển thành số nguyên
                 int_numbers = [int(n) for n in numbers]
+                # Lấy số lớn nhất (Vì Print luôn lớn hơn số Edition nếu lỡ đọc nhầm)
                 print_num = max(int_numbers)
                 
                 results.append((i, print_num))
@@ -218,7 +227,7 @@ def scan_image_for_prints(image_url):
         return []
 
 # ==============================================================================
-# <<< LOGIC NHẶT THẺ (FIX LỖI KHÔNG CÓ EMBED) >>>
+# <<< LOGIC NHẶT THẺ (FIX LỖI EMBED & RATE LIMIT) >>>
 # ==============================================================================
 async def handle_grab(bot, msg, bot_num):
     channel_id = msg.channel.id
@@ -230,10 +239,11 @@ async def handle_grab(bot, msg, bot_num):
     ocr_enabled = target_server.get(f'ocr_enabled_{bot_num}', False)
     print_max_limit = target_server.get(f'print_threshold_{bot_num}', 1000)
 
+    # Nút trên web phải hiện "DISABLE GRAB" thì auto_grab mới là True
     if not auto_grab: 
         return
 
-    # Random delay để tránh Rate Limit
+    # Random delay 0.5s - 1.5s để tránh Rate Limit (429)
     await asyncio.sleep(random.uniform(0.5, 1.5))
 
     # [QUAN TRỌNG] Tải lại tin nhắn để chắc chắn có ảnh
@@ -247,7 +257,7 @@ async def handle_grab(bot, msg, bot_num):
 
     # --- ƯU TIÊN 1: OCR (QUÉT ẢNH) ---
     if ocr_enabled:
-        # TỰ ĐỘNG TÌM ẢNH Ở CẢ EMBED VÀ ATTACHMENT
+        # [FIX] Tự động tìm URL ảnh ở cả Embed VÀ Attachment
         image_url = None
         if msg.embeds and msg.embeds[0].image:
             image_url = msg.embeds[0].image.url
@@ -260,8 +270,10 @@ async def handle_grab(bot, msg, bot_num):
             print(f"[GRAB] 📷 Bot {bot_num}: Đang quét ảnh... (Max Print: {print_max_limit})", flush=True)
             
             loop = asyncio.get_event_loop()
+            # Gọi hàm xử lý ảnh PIL mới
             ocr_results = await loop.run_in_executor(None, scan_image_for_prints, image_url)
             
+            # Lọc thẻ thỏa mãn điều kiện
             valid_prints = [x for x in ocr_results if x[1] <= print_max_limit]
             
             if valid_prints:
@@ -274,7 +286,7 @@ async def handle_grab(bot, msg, bot_num):
     # --- ƯU TIÊN 2: CHECK TIM (CHỈ CHẠY NẾU OCR KHÔNG RA) ---
     if not final_choice:
         try:
-            # Quét history nếu không tìm thấy print ngon
+            # Quét history lấy 3 tin gần nhất (giảm tải API)
             async for msg_item in msg.channel.history(limit=3):
                 if msg_item.author.id == int(karibbit_id) and msg_item.created_at > msg.created_at:
                     if not msg_item.embeds: continue
@@ -316,11 +328,14 @@ async def handle_grab(bot, msg, bot_num):
         asyncio.create_task(grab_action())
 
 
-# --- KHỞI TẠO BOT (LỌC LOG) ---
+# --- KHỞI TẠO BOT (ĐÃ FIX LỖI KHỞI ĐỘNG & LỌC LOG) ---
 def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    bot = discord.Client(self_bot=True, heartbeat_timeout=60.0, guild_subscription_options=discord.GuildSubscriptionOptions.off())
+    
+    # [FIX QUAN TRỌNG] Dùng 'guild_subscriptions=False' (bản cũ) thay vì 'GuildSubscriptionOptions' (bản mới)
+    # Điều này sửa lỗi AttributeError khi khởi động
+    bot = discord.Client(self_bot=True, heartbeat_timeout=60.0, guild_subscriptions=False)
     
     try: bot_identifier = int(bot_id_str.split('_')[1])
     except: bot_identifier = 99
@@ -334,16 +349,18 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     async def on_message(msg):
         if not is_main: return
         
-        # --- LỌC LOG CHỈ HIỆN KÊNH ĐƯỢC CẤU HÌNH ---
+        # --- LỌC LOG: CHỈ XỬ LÝ KÊNH ĐƯỢC CẤU HÌNH ---
+        # Kiểm tra ID kênh có trong danh sách web không
         target_server = next((s for s in servers if s.get('main_channel_id') == str(msg.channel.id)), None)
         
-        # Nếu không phải kênh quan tâm -> Dừng ngay (Không in log)
+        # Nếu không phải kênh quan tâm -> Dừng ngay (Không in log rác)
         if not target_server: return
 
         if "dropping" in msg.content.lower():
             print(f"[DEBUG] 👀 Bot {bot_id_str} thấy Drop tại kênh ĐÚNG {msg.channel.id}", flush=True)
 
         try:
+            # Kiểm tra ID của Karuta (6469...) hoặc Karibbit (1311...)
             if (msg.author.id == int(karuta_id) or msg.author.id == int(karibbit_id)) and "dropping" in msg.content.lower():
                 print(f"[DEBUG] ✅ PHÁT HIỆN DROP! Đang xử lý...", flush=True)
                 await handle_grab(bot, msg, bot_identifier)
