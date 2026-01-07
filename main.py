@@ -164,15 +164,31 @@ def health_monitoring_check():
         check_bot_health(bot_data, bot_id)
 
 # ==============================================================================
-# <<< XỬ LÝ ẢNH (OCR) - FIX TÁCH PRINT & EDITION (THEO Ý BẠN) >>>
+# <<< XỬ LÝ ẢNH (OCR) - FIX LỖI SSL & RETRY >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
     print(f"[OCR LOG] 📥 Đang tải ảnh từ URL...", flush=True)
+    
+    # --- ĐOẠN FIX: Thử lại 3 lần nếu mạng lỗi ---
+    img_content = None
+    for attempt in range(3):
+        try:
+            # Tăng timeout lên 10s để đỡ bị ngắt khi mạng lag
+            resp = requests.get(image_url, timeout=10) 
+            if resp.status_code == 200:
+                img_content = resp.content
+                break # Tải thành công thì thoát vòng lặp
+        except Exception as e:
+            print(f"[OCR LOG] ⚠️ Lần {attempt+1} lỗi tải ảnh: {e}. Đang thử lại...", flush=True)
+            time.sleep(1.5) # Nghỉ 1.5s rồi thử lại
+    
+    if img_content is None:
+        print(f"[OCR LOG] ❌ Đã thử 3 lần nhưng không tải được ảnh.", flush=True)
+        return []
+    # --------------------------------------------
+
     try:
-        resp = requests.get(image_url, timeout=5)
-        if resp.status_code != 200: return []
-        
-        img = Image.open(io.BytesIO(resp.content))
+        img = Image.open(io.BytesIO(img_content))
         width, height = img.size
         
         num_cards = 3 
@@ -197,37 +213,34 @@ def scan_image_for_prints(image_url):
             crop_img = enhancer.enhance(2.0) 
             crop_img = ImageOps.invert(crop_img)
 
-            # OCR whitelist số để đọc nhanh hơn
+            # OCR whitelist số
             custom_config = r'--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
             text = pytesseract.image_to_string(crop_img, config=custom_config)
             
-            # Lấy tất cả các chuỗi số tìm được
+            # Regex tìm số
             numbers = re.findall(r'\d+', text)
             
             print_num = 0
             edition_num = 0
             
             if numbers:
-                # TRƯỜNG HỢP 1: Đọc được 2 số riêng biệt (VD: '2964', '7')
+                # TRƯỜNG HỢP 1: Tách chuẩn 2 số
                 if len(numbers) >= 2:
                     print_num = int(numbers[0])
                     edition_num = int(numbers[1])
                     print(f"[OCR LOG] 👁️ Thẻ {i+1}: Tách chuẩn -> Print: {print_num} | Ed: {edition_num}", flush=True)
 
-                # TRƯỜNG HỢP 2: Số bị dính chùm (VD: '29647') -> Cắt số cuối
+                # TRƯỜNG HỢP 2: Dính chùm -> Cắt số cuối
                 elif len(numbers) == 1:
                     raw_str = numbers[0]
                     if len(raw_str) > 1:
-                        # Logic của bạn: Cắt số cuối làm Edition
-                        print_num = int(raw_str[:-1]) # Lấy từ đầu đến sát cuối
-                        edition_num = int(raw_str[-1]) # Lấy số cuối cùng
+                        print_num = int(raw_str[:-1]) 
+                        edition_num = int(raw_str[-1]) 
                         print(f"[OCR LOG] 👁️ Thẻ {i+1}: Dính chùm '{raw_str}' -> Cắt Print: {print_num} | Ed: {edition_num}", flush=True)
                     else:
-                        # Nếu chỉ đọc được 1 chữ số (VD: '5'), coi như là Print, Ed=0
                         print_num = int(raw_str)
                         print(f"[OCR LOG] 👁️ Thẻ {i+1}: Chỉ thấy 1 số -> Print: {print_num}", flush=True)
                 
-                # Lưu kết quả (Chỉ lưu Print để logic nhặt hoạt động, Edition để dành update sau)
                 if print_num > 0:
                     results.append((i, print_num))
             else:
@@ -239,7 +252,6 @@ def scan_image_for_prints(image_url):
         print(f"[OCR LOG] ❌ Lỗi xử lý ảnh: {e}", flush=True)
         traceback.print_exc()
         return []
-
 # ==============================================================================
 # <<< LOGIC NHẶT THẺ - PHIÊN BẢN MỚI (MULTI-MODE) >>>
 # ==============================================================================
@@ -429,7 +441,7 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    bot = discord.Client(self_bot=True, heartbeat_timeout=60.0, guild_subscriptions=False)
+    bot = discord.Client(self_bot=True, heartbeat_timeout=30.0, guild_subscriptions=False)
     
     try: bot_identifier = int(bot_id_str.split('_')[1])
     except: bot_identifier = 99
