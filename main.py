@@ -3,8 +3,8 @@ from flask import Flask, request, render_template_string, jsonify
 from dotenv import load_dotenv
 import numpy as np
 import pytesseract
-from PIL import Image, ImageOps, ImageEnhance # <--- Thư viện xử lý ảnh mới
-import io # <--- Để xử lý ảnh trên RAM
+from PIL import Image, ImageOps, ImageEnhance
+import io
 
 # --- CẤU HÌNH OCR ---
 pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
@@ -43,7 +43,6 @@ class ThreadSafeBotManager:
                 try:
                     bot_instance = bot_data['instance']
                     bot_loop = bot_data.get('loop')
-                    # Chỉ đóng bot nếu loop còn đang chạy
                     if bot_loop and not bot_loop.is_closed():
                         asyncio.run_coroutine_threadsafe(bot_instance.close(), bot_loop)
                 except Exception as e:
@@ -154,7 +153,7 @@ def health_monitoring_check():
         check_bot_health(bot_data, bot_id)
 
 # ==============================================================================
-# <<< XỬ LÝ ẢNH (OCR) - PHIÊN BẢN PIL (CHUẨN LOGIC KARUTA SNIPER) >>>
+# <<< XỬ LÝ ẢNH (OCR) - DÙNG PIL & LOGIC CHUẨN >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
     print(f"[OCR LOG] 📥 Đang tải ảnh từ URL...", flush=True)
@@ -162,62 +161,48 @@ def scan_image_for_prints(image_url):
         resp = requests.get(image_url, timeout=5)
         if resp.status_code != 200: return []
         
-        # Đọc ảnh trực tiếp từ RAM (không lưu file)
+        # Dùng PIL để mở ảnh từ RAM
         img = Image.open(io.BytesIO(resp.content))
-        
         width, height = img.size
         
-        # Logic xác định số lượng thẻ dựa trên chiều rộng ảnh
-        # Ảnh 3 thẻ thường rộng ~900px, 4 thẻ ~1200px
+        # Xác định số lượng thẻ
         num_cards = 3 
         if width > 1000: num_cards = 4
         
         card_width = width // num_cards
         results = []
 
-        print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột (PIL Mode).", flush=True)
+        print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột.", flush=True)
 
         for i in range(num_cards):
-            # 1. Xác định tọa độ cắt thẻ
             left = i * card_width
             right = (i + 1) * card_width
-            top = 0
-            bottom = height
             
-            # 2. Cắt vùng chứa số Print (Phần đáy thẻ)
-            # Theo kinh nghiệm và code tham khảo, print nằm ở khoảng 13-15% dưới cùng
-            print_crop_top = int(height * 0.86) # Lấy từ 86% đổ xuống
+            # Cắt phần đáy chứa Print (khoảng 14% dưới cùng)
+            # Tọa độ này tránh được tên Anime ở trên
+            print_crop_top = int(height * 0.86) 
             
-            # Cắt lấy phần Print của từng thẻ
-            # crop((left, top, right, bottom))
-            crop_img = img.crop((left, print_crop_top, right, bottom))
+            # Cắt ảnh: (left, top, right, bottom)
+            crop_img = img.crop((left, print_crop_top, right, height))
 
-            # 3. Xử lý ảnh để rõ số (Pre-processing)
-            # Chuyển sang thang độ xám (Grayscale)
-            crop_img = crop_img.convert('L')
+            # Xử lý ảnh (Pre-processing) giống code tham khảo
+            crop_img = crop_img.convert('L') # Chuyển xám
             
-            # Tăng độ tương phản (Contrast)
             enhancer = ImageEnhance.Contrast(crop_img)
-            crop_img = enhancer.enhance(2.0) # Tăng gấp đôi độ tương phản
+            crop_img = enhancer.enhance(2.0) # Tăng tương phản
             
-            # Nghịch đảo màu (Invert) - Số trắng nền đen -> Số đen nền trắng (Tesseract thích cái này)
-            crop_img = ImageOps.invert(crop_img)
+            crop_img = ImageOps.invert(crop_img) # Đảo màu (Trắng/Đen -> Đen/Trắng)
 
-            # 4. Config Tesseract chuyên dụng cho số (Giống code tham khảo)
-            # --psm 7: Coi ảnh là 1 dòng văn bản duy nhất (Rất quan trọng cho số Print)
-            # whitelist: Chỉ cho phép đọc số
+            # Config Tesseract chuẩn cho số (psm 7)
             custom_config = r'--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
-            
             text = pytesseract.image_to_string(crop_img, config=custom_config)
             
-            # Lọc lấy số (Đôi khi nó đọc ra cả số Edition bên cạnh, ví dụ: 79371 1)
-            # Ta lấy số lớn nhất vì Print luôn > Edition
+            # Lọc lấy số
             numbers = re.findall(r'\d+', text)
             
             if numbers:
-                # Chuyển list string thành list int
+                # Lấy số lớn nhất (Print)
                 int_numbers = [int(n) for n in numbers]
-                # Số Print thường là số lớn nhất trong đống đó
                 print_num = max(int_numbers)
                 
                 results.append((i, print_num))
@@ -233,56 +218,50 @@ def scan_image_for_prints(image_url):
         return []
 
 # ==============================================================================
-# <<< LOGIC NHẶT THẺ (DEBUG CHI TIẾT + FIX LAG ẢNH) >>>
+# <<< LOGIC NHẶT THẺ (FIX LỖI KHÔNG CÓ EMBED) >>>
 # ==============================================================================
 async def handle_grab(bot, msg, bot_num):
     channel_id = msg.channel.id
     target_server = next((s for s in servers if s.get('main_channel_id') == str(channel_id)), None)
-    
-    # 1. Kiểm tra cấu hình server
-    if not target_server: 
-        print(f"[DEBUG] ❌ Bot {bot_num}: Không tìm thấy cấu hình server cho kênh này.", flush=True)
-        return
+    if not target_server: return
 
     bot_id_str = f'main_{bot_num}'
     auto_grab = target_server.get(f'auto_grab_enabled_{bot_num}', False)
     ocr_enabled = target_server.get(f'ocr_enabled_{bot_num}', False)
     print_max_limit = target_server.get(f'print_threshold_{bot_num}', 1000)
 
-    # 2. Kiểm tra nút bật/tắt trên Web
-    # Lưu ý: Trên web nút phải hiện chữ "DISABLE GRAB" (màu đỏ/xám) thì biến này mới là True
     if not auto_grab: 
-        print(f"[DEBUG] ⛔ Bot {bot_num}: AutoGrab đang TẮT. Hãy bấm nút trên Web!", flush=True)
         return
 
-    # 3. [QUAN TRỌNG] CHỜ ẢNH LOAD (FIX LAG)
-    # Karuta thường mất 0.5s - 1s để load ảnh sau khi chat
-    print(f"[DEBUG] ⏳ Bot {bot_num}: Đang chờ 1 giây để Karuta tải ảnh...", flush=True)
-    await asyncio.sleep(1.0) 
+    # Random delay để tránh Rate Limit
+    await asyncio.sleep(random.uniform(0.5, 1.5))
 
+    # [QUAN TRỌNG] Tải lại tin nhắn để chắc chắn có ảnh
     try:
-        # Tải lại tin nhắn để lấy Embed mới nhất
         msg = await msg.channel.fetch_message(msg.id)
     except Exception as e:
-        print(f"[DEBUG] ❌ Lỗi khi tải lại tin nhắn: {e}", flush=True)
+        print(f"[DEBUG] ⚠️ Lỗi fetch message: {e}", flush=True)
         return
 
     final_choice = None 
 
     # --- ƯU TIÊN 1: OCR (QUÉT ẢNH) ---
     if ocr_enabled:
-        if not msg.embeds:
-            print(f"[DEBUG] ❌ Bot {bot_num}: Tin nhắn không có Embed (Ảnh lỗi hoặc mạng lag).", flush=True)
-        elif not msg.embeds[0].image:
-            print(f"[DEBUG] ❌ Bot {bot_num}: Embed có, nhưng không có URL ảnh.", flush=True)
-        else:
+        # TỰ ĐỘNG TÌM ẢNH Ở CẢ EMBED VÀ ATTACHMENT
+        image_url = None
+        if msg.embeds and msg.embeds[0].image:
             image_url = msg.embeds[0].image.url
+        elif msg.attachments:
+            image_url = msg.attachments[0].url
+            
+        if not image_url:
+            print(f"[DEBUG] ❌ Bot {bot_num}: Không tìm thấy ảnh trong Embed hoặc Attachment.", flush=True)
+        else:
             print(f"[GRAB] 📷 Bot {bot_num}: Đang quét ảnh... (Max Print: {print_max_limit})", flush=True)
             
             loop = asyncio.get_event_loop()
             ocr_results = await loop.run_in_executor(None, scan_image_for_prints, image_url)
             
-            # Lọc thẻ có print nhỏ hơn giới hạn
             valid_prints = [x for x in ocr_results if x[1] <= print_max_limit]
             
             if valid_prints:
@@ -290,42 +269,43 @@ async def handle_grab(bot, msg, bot_num):
                 if best_print_idx < 4:
                     emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_print_idx]
                     final_choice = (emoji, 0.5, f"Low Print #{best_print_val}")
-                    print(f"[GRAB] ✅ Bot {bot_num}: TÌM THẤY PRINT NGON! Index: {best_print_idx+1}, Value: {best_print_val}", flush=True)
-            else:
-                # Nếu đọc được nhưng không có thẻ nào thỏa mãn
-                print(f"[DEBUG] 📉 Bot {bot_num}: Quét xong. Không có thẻ nào dưới {print_max_limit}.", flush=True)
+                    print(f"[GRAB] ✅ TÌM THẤY PRINT NGON! Index: {best_print_idx+1}, Value: {best_print_val}", flush=True)
 
     # --- ƯU TIÊN 2: CHECK TIM (CHỈ CHẠY NẾU OCR KHÔNG RA) ---
     if not final_choice:
         try:
-            if msg.embeds and msg.embeds[0].description and '♡' in msg.embeds[0].description:
-                desc = msg.embeds[0].description
-                lines = desc.split('\n')[:4]
-                heart_numbers = [int(re.search(r'♡(\d+)', line).group(1)) if re.search(r'♡(\d+)', line) else 0 for line in lines]
-                
-                min_h = target_server.get(f'heart_threshold_{bot_num}', 50)
-                max_h = target_server.get(f'max_heart_threshold_{bot_num}', 99999)
-                
-                valid_cards = [(idx, hearts) for idx, hearts in enumerate(heart_numbers) if min_h <= hearts <= max_h]
-                
-                if valid_cards:
-                    best_idx, best_hearts = max(valid_cards, key=lambda x: x[1])
-                    emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
-                    final_choice = (emoji, 0.8, f"Hearts {best_hearts}")
-                    print(f"[GRAB] ❤️ Bot {bot_num}: Nhặt theo Tim ({best_hearts})", flush=True)
+            # Quét history nếu không tìm thấy print ngon
+            async for msg_item in msg.channel.history(limit=3):
+                if msg_item.author.id == int(karibbit_id) and msg_item.created_at > msg.created_at:
+                    if not msg_item.embeds: continue
+                    desc = msg_item.embeds[0].description
+                    if not desc or '♡' not in desc: continue
+
+                    lines = desc.split('\n')[:4]
+                    heart_numbers = [int(re.search(r'♡(\d+)', line).group(1)) if re.search(r'♡(\d+)', line) else 0 for line in lines]
+                    
+                    min_h = target_server.get(f'heart_threshold_{bot_num}', 50)
+                    max_h = target_server.get(f'max_heart_threshold_{bot_num}', 99999)
+                    
+                    valid_cards = [(idx, hearts) for idx, hearts in enumerate(heart_numbers) if min_h <= hearts <= max_h]
+                    
+                    if valid_cards:
+                        best_idx, best_hearts = max(valid_cards, key=lambda x: x[1])
+                        emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
+                        final_choice = (emoji, 0.8, f"Hearts {best_hearts}")
+                        break
         except Exception as e:
-            print(f"[GRAB] Lỗi check tim: {e}", flush=True)
+            pass
 
     # --- THỰC HIỆN GRAB ---
     if final_choice:
         emoji, delay, reason = final_choice
-        print(f"[GRAB | Bot {bot_num}] 🎯 QUYẾT ĐỊNH NHẶT {emoji}. Lý do: {reason}", flush=True)
+        print(f"[GRAB | Bot {bot_num}] 🎯 Quyết định nhặt {emoji}. Lý do: {reason}", flush=True)
         
         async def grab_action():
             await asyncio.sleep(delay)
             try:
                 await msg.add_reaction(emoji)
-                # KTB logic...
                 ktb_id = target_server.get('ktb_channel_id')
                 if ktb_id:
                     ktb = bot.get_channel(int(ktb_id))
@@ -336,16 +316,14 @@ async def handle_grab(bot, msg, bot_num):
         asyncio.create_task(grab_action())
 
 
-# --- KHỞI TẠO BOT ---
+# --- KHỞI TẠO BOT (LỌC LOG) ---
 def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    bot = discord.Client(self_bot=True)
+    bot = discord.Client(self_bot=True, heartbeat_timeout=60.0, guild_subscription_options=discord.GuildSubscriptionOptions.off())
     
-    try: 
-        bot_identifier = int(bot_id_str.split('_')[1])
-    except: 
-        bot_identifier = 99
+    try: bot_identifier = int(bot_id_str.split('_')[1])
+    except: bot_identifier = 99
 
     @bot.event
     async def on_ready():
@@ -356,56 +334,35 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     async def on_message(msg):
         if not is_main: return
         
-        # --- [BƯỚC LỌC QUAN TRỌNG NHẤT] ---
-        # Kiểm tra xem kênh hiện tại (msg.channel.id) có nằm trong danh sách web không
-        # Lưu ý: So sánh string vì trong config lưu dạng string
+        # --- LỌC LOG CHỈ HIỆN KÊNH ĐƯỢC CẤU HÌNH ---
         target_server = next((s for s in servers if s.get('main_channel_id') == str(msg.channel.id)), None)
         
-        # Nếu KHÔNG tìm thấy config cho kênh này -> DỪNG NGAY LẬP TỨC (Không in log rác)
-        if not target_server:
-            return
+        # Nếu không phải kênh quan tâm -> Dừng ngay (Không in log)
+        if not target_server: return
 
-        # --- NẾU ĐÚNG KÊNH CẦN THEO DÕI THÌ MỚI CHẠY TIẾP ---
-        
-        # In log debug CHỈ KHI đúng kênh quan tâm
         if "dropping" in msg.content.lower():
             print(f"[DEBUG] 👀 Bot {bot_id_str} thấy Drop tại kênh ĐÚNG {msg.channel.id}", flush=True)
 
         try:
             if (msg.author.id == int(karuta_id) or msg.author.id == int(karibbit_id)) and "dropping" in msg.content.lower():
-                print(f"[DEBUG] ✅ PHÁT HIỆN DROP CHUẨN! Đang xử lý...", flush=True)
+                print(f"[DEBUG] ✅ PHÁT HIỆN DROP! Đang xử lý...", flush=True)
                 await handle_grab(bot, msg, bot_identifier)
         except Exception as e:
             print(f"[Err] {e}", flush=True)
-            traceback.print_exc()
+
     try:
-        # Thêm bot vào manager TRƯỚC khi start
         bot_manager.add_bot(bot_id_str, {'instance': bot, 'loop': loop})
         loop.run_until_complete(bot.start(token))
-    except KeyboardInterrupt:
-        print(f"[Bot] ⚠️ KeyboardInterrupt cho {bot_id_str}", flush=True)
+    except KeyboardInterrupt: pass
     except Exception as e:
         print(f"[Bot] ❌ Crash {bot_id_str}: {e}", flush=True)
-        traceback.print_exc()
     finally:
-        # Cleanup an toàn
         try:
-            if not loop.is_closed():
-                # Đóng bot trước khi đóng loop
-                if not bot.is_closed():
-                    loop.run_until_complete(bot.close())
-                # Hủy tất cả tasks còn lại
-                pending = asyncio.all_tasks(loop)
-                for task in pending:
-                    task.cancel()
-                # Đợi tasks bị hủy hoàn tất
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                loop.close()
-        except Exception as e:
-            print(f"[Bot] ⚠️ Lỗi cleanup {bot_id_str}: {e}", flush=True)
-        finally:
-            # Xóa khỏi manager
             bot_manager.remove_bot(bot_id_str)
+            if not bot.is_closed(): loop.run_until_complete(bot.close())
+            if loop.is_running(): loop.stop()
+            if not loop.is_closed(): loop.close()
+        except: pass
 
 # --- WEB SERVER (UI) ---
 app = Flask(__name__)
