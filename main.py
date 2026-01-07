@@ -7,7 +7,6 @@ from PIL import Image, ImageOps, ImageEnhance
 import io
 
 # --- CẤU HÌNH OCR ---
-# Đường dẫn tesseract trên Render (Linux)
 pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
 
 load_dotenv()
@@ -25,6 +24,15 @@ bot_states = {
     "reboot_settings": {}, "active": {}, "watermelon_grab": {}, "health_stats": {},
 }
 server_start_time = time.time()
+
+# --- BIẾN CHIA SẺ THÔNG TIN GIỮA CÁC BOT ---
+shared_drop_info = {
+    "heart_data": None,
+    "ocr_data": None,
+    "message_id": None,
+    "timestamp": 0,
+    "lock": threading.Lock()
+}
 
 # --- QUẢN LÝ BOT THREAD-SAFE ---
 class ThreadSafeBotManager:
@@ -154,7 +162,7 @@ def health_monitoring_check():
         check_bot_health(bot_data, bot_id)
 
 # ==============================================================================
-# <<< XỬ LÝ ẢNH (OCR) - PHIÊN BẢN PIL (CHUẨN KARUTA SNIPER) >>>
+# <<< XỬ LÝ ẢNH (OCR) - PHIÊN BẢN PIL >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
     print(f"[OCR LOG] 📥 Đang tải ảnh từ URL...", flush=True)
@@ -162,11 +170,9 @@ def scan_image_for_prints(image_url):
         resp = requests.get(image_url, timeout=5)
         if resp.status_code != 200: return []
         
-        # Dùng PIL để mở ảnh từ RAM (BytesIO) -> Nhanh hơn lưu file
         img = Image.open(io.BytesIO(resp.content))
         width, height = img.size
         
-        # Xác định số lượng thẻ (3 hay 4) dựa trên chiều rộng ảnh
         num_cards = 3 
         if width > 1000: num_cards = 4
         
@@ -179,39 +185,25 @@ def scan_image_for_prints(image_url):
             left = i * card_width
             right = (i + 1) * card_width
             
-            # Cắt phần đáy chứa Print (lấy khoảng 14% dưới cùng)
-            # Tọa độ này giúp né tên Anime/Character ở trên
             print_crop_top = int(height * 0.86) 
             
-            # Cắt ảnh: (left, top, right, bottom)
             crop_img = img.crop((left, print_crop_top, right, height))
 
-            # --- [LOGIC XỬ LÝ MÀU CHUẨN] ---
-            # 1. Chuyển sang thang độ xám (Grayscale)
             crop_img = crop_img.convert('L') 
             
-            # 2. Tăng độ tương phản (Contrast) lên gấp đôi
             enhancer = ImageEnhance.Contrast(crop_img)
             crop_img = enhancer.enhance(2.0) 
             
-            # 3. Đảo màu (Invert): Chữ Trắng/Nền Đen -> Chữ Đen/Nền Trắng
-            # Tesseract đọc số đen trên nền trắng cực tốt
             crop_img = ImageOps.invert(crop_img)
 
-            # --- [CONFIG TESSERACT CHUẨN] ---
-            # --psm 7: Coi ảnh là 1 dòng văn bản duy nhất (Single line)
-            # whitelist: Chỉ cho phép đọc số, loại bỏ nhiễu chữ cái
             custom_config = r'--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
             
             text = pytesseract.image_to_string(crop_img, config=custom_config)
             
-            # Lọc lấy số từ kết quả
             numbers = re.findall(r'\d+', text)
             
             if numbers:
-                # Chuyển thành số nguyên
                 int_numbers = [int(n) for n in numbers]
-                # Lấy số lớn nhất (Vì Print luôn lớn hơn số Edition nếu lỡ đọc nhầm)
                 print_num = max(int_numbers)
                 
                 results.append((i, print_num))
@@ -227,89 +219,147 @@ def scan_image_for_prints(image_url):
         return []
 
 # ==============================================================================
-# <<< LOGIC NHẶT THẺ (FIX LỖI EMBED & RATE LIMIT) >>>
+# <<< LOGIC NHẶT THẺ - PHIÊN BẢN MỚI (CHỈ BOT 1 ĐỌC, CHIA SẺ CHO CÁC BOT KHÁC) >>>
 # ==============================================================================
+async def scan_and_share_drop_info(bot, msg, channel_id):
+    """Bot 1 quét thông tin và chia sẻ cho tất cả bot khác"""
+    
+    with shared_drop_info["lock"]:
+        # Reset data
+        shared_drop_info["heart_data"] = None
+        shared_drop_info["ocr_data"] = None
+        shared_drop_info["message_id"] = msg.id
+        shared_drop_info["timestamp"] = time.time()
+    
+    print(f"[SCAN] 🔍 Bot 1 đang quét thông tin drop...", flush=True)
+    
+    # Tải lại tin nhắn
+    try:
+        msg = await msg.channel.fetch_message(msg.id)
+    except Exception as e:
+        print(f"[SCAN] ⚠️ Lỗi fetch message: {e}", flush=True)
+        return
+    
+    # 1. QUÉT TIM (NHANH NHẤT - ƯU TIÊN)
+    heart_data = None
+    try:
+        async for msg_item in msg.channel.history(limit=3):
+            if msg_item.author.id == int(karibbit_id) and msg_item.created_at > msg.created_at:
+                if not msg_item.embeds: continue
+                desc = msg_item.embeds[0].description
+                if not desc or '♡' not in desc: continue
+
+                lines = desc.split('\n')[:4]
+                heart_numbers = [int(re.search(r'♡(\d+)', line).group(1)) if re.search(r'♡(\d+)', line) else 0 for line in lines]
+                heart_data = heart_numbers
+                print(f"[SCAN] ❤️ Đọc được tim: {heart_data}", flush=True)
+                break
+    except Exception as e:
+        print(f"[SCAN] ⚠️ Lỗi đọc tim: {e}", flush=True)
+    
+    # 2. QUÉT PRINT (CHẬM HƠN)
+    ocr_data = None
+    image_url = None
+    if msg.embeds and msg.embeds[0].image:
+        image_url = msg.embeds[0].image.url
+    elif msg.attachments:
+        image_url = msg.attachments[0].url
+    
+    if image_url:
+        print(f"[SCAN] 📷 Đang quét ảnh OCR...", flush=True)
+        loop = asyncio.get_event_loop()
+        ocr_data = await loop.run_in_executor(None, scan_image_for_prints, image_url)
+        print(f"[SCAN] 👁️ Kết quả OCR: {ocr_data}", flush=True)
+    
+    # Lưu vào shared memory
+    with shared_drop_info["lock"]:
+        shared_drop_info["heart_data"] = heart_data
+        shared_drop_info["ocr_data"] = ocr_data
+    
+    print(f"[SCAN] ✅ Bot 1 hoàn tất quét. Dữ liệu đã được chia sẻ.", flush=True)
+
 async def handle_grab(bot, msg, bot_num):
+    """Logic nhặt thẻ cho mỗi bot dựa trên dữ liệu chia sẻ"""
+    
     channel_id = msg.channel.id
     target_server = next((s for s in servers if s.get('main_channel_id') == str(channel_id)), None)
     if not target_server: return
 
     bot_id_str = f'main_{bot_num}'
     auto_grab = target_server.get(f'auto_grab_enabled_{bot_num}', False)
-    ocr_enabled = target_server.get(f'ocr_enabled_{bot_num}', False)
-    print_max_limit = target_server.get(f'print_threshold_{bot_num}', 1000)
-
-    # Nút trên web phải hiện "DISABLE GRAB" thì auto_grab mới là True
+    
     if not auto_grab: 
         return
 
-    # Random delay 0.5s - 1.5s để tránh Rate Limit (429)
-    await asyncio.sleep(random.uniform(0.5, 1.5))
-
-    # [QUAN TRỌNG] Tải lại tin nhắn để chắc chắn có ảnh
-    try:
-        msg = await msg.channel.fetch_message(msg.id)
-    except Exception as e:
-        print(f"[DEBUG] ⚠️ Lỗi fetch message: {e}", flush=True)
-        return
-
-    final_choice = None 
-
-    # --- ƯU TIÊN 1: OCR (QUÉT ẢNH) ---
-    if ocr_enabled:
-        # [FIX] Tự động tìm URL ảnh ở cả Embed VÀ Attachment
-        image_url = None
-        if msg.embeds and msg.embeds[0].image:
-            image_url = msg.embeds[0].image.url
-        elif msg.attachments:
-            image_url = msg.attachments[0].url
-            
-        if not image_url:
-            print(f"[DEBUG] ❌ Bot {bot_num}: Không tìm thấy ảnh trong Embed hoặc Attachment.", flush=True)
-        else:
-            print(f"[GRAB] 📷 Bot {bot_num}: Đang quét ảnh... (Max Print: {print_max_limit})", flush=True)
-            
-            loop = asyncio.get_event_loop()
-            # Gọi hàm xử lý ảnh PIL mới
-            ocr_results = await loop.run_in_executor(None, scan_image_for_prints, image_url)
-            
-            # Lọc thẻ thỏa mãn điều kiện
-            valid_prints = [x for x in ocr_results if x[1] <= print_max_limit]
-            
-            if valid_prints:
-                best_print_idx, best_print_val = min(valid_prints, key=lambda x: x[1])
-                if best_print_idx < 4:
-                    emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_print_idx]
-                    final_choice = (emoji, 0.5, f"Low Print #{best_print_val}")
-                    print(f"[GRAB] ✅ TÌM THẤY PRINT NGON! Index: {best_print_idx+1}, Value: {best_print_val}", flush=True)
-
-    # --- ƯU TIÊN 2: CHECK TIM (CHỈ CHẠY NẾU OCR KHÔNG RA) ---
-    if not final_choice:
-        try:
-            # Quét history lấy 3 tin gần nhất (giảm tải API)
-            async for msg_item in msg.channel.history(limit=3):
-                if msg_item.author.id == int(karibbit_id) and msg_item.created_at > msg.created_at:
-                    if not msg_item.embeds: continue
-                    desc = msg_item.embeds[0].description
-                    if not desc or '♡' not in desc: continue
-
-                    lines = desc.split('\n')[:4]
-                    heart_numbers = [int(re.search(r'♡(\d+)', line).group(1)) if re.search(r'♡(\d+)', line) else 0 for line in lines]
-                    
-                    min_h = target_server.get(f'heart_threshold_{bot_num}', 50)
-                    max_h = target_server.get(f'max_heart_threshold_{bot_num}', 99999)
-                    
-                    valid_cards = [(idx, hearts) for idx, hearts in enumerate(heart_numbers) if min_h <= hearts <= max_h]
-                    
-                    if valid_cards:
-                        best_idx, best_hearts = max(valid_cards, key=lambda x: x[1])
-                        emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
-                        final_choice = (emoji, 0.8, f"Hearts {best_hearts}")
-                        break
-        except Exception as e:
-            pass
-
-    # --- THỰC HIỆN GRAB ---
+    # CHỈ BOT 1 QUÉT - CÁC BOT KHÁC CHỜ
+    if bot_num == 1:
+        await scan_and_share_drop_info(bot, msg, channel_id)
+        await asyncio.sleep(0.3)  # Delay nhỏ để bot 1 kịp nhặt trước
+    else:
+        # Các bot khác chờ 0.5s để bot 1 quét xong
+        await asyncio.sleep(random.uniform(0.5, 0.8))
+    
+    # Lấy dữ liệu chia sẻ
+    with shared_drop_info["lock"]:
+        if shared_drop_info["message_id"] != msg.id:
+            print(f"[GRAB | Bot {bot_num}] ⚠️ Message ID không khớp, bỏ qua.", flush=True)
+            return
+        
+        heart_data = shared_drop_info["heart_data"]
+        ocr_data = shared_drop_info["ocr_data"]
+    
+    # Lấy cấu hình
+    grab_mode = target_server.get(f'grab_mode_{bot_num}', 1)  # 1: Tim, 2: Print, 3: Cả hai
+    
+    heart_min = target_server.get(f'heart_min_{bot_num}', 50)
+    heart_max = target_server.get(f'heart_max_{bot_num}', 99999)
+    
+    print_min = target_server.get(f'print_min_{bot_num}', 1)
+    print_max = target_server.get(f'print_max_{bot_num}', 1000)
+    
+    final_choice = None
+    
+    # MODE 1: CHỈ TIM (NHANH NHẤT)
+    if grab_mode == 1 and heart_data:
+        valid_cards = [(idx, hearts) for idx, hearts in enumerate(heart_data) if heart_min <= hearts <= heart_max]
+        
+        if valid_cards:
+            best_idx, best_hearts = max(valid_cards, key=lambda x: x[1])
+            emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
+            final_choice = (emoji, 0.3, f"Mode 1 - Hearts {best_hearts}")
+    
+    # MODE 3: CẢ TIM VÀ PRINT (ƯU TIÊN THỨ 2)
+    elif grab_mode == 3 and heart_data and ocr_data:
+        # Tìm thẻ thỏa MÃN CẢ HAI ĐIỀU KIỆN
+        valid_cards = []
+        
+        # Tạo dict print theo index
+        print_dict = {idx: val for idx, val in ocr_data}
+        
+        for idx, hearts in enumerate(heart_data):
+            if idx in print_dict:
+                print_val = print_dict[idx]
+                # Kiểm tra CẢ tim VÀ print
+                if (heart_min <= hearts <= heart_max) and (print_min <= print_val <= print_max):
+                    valid_cards.append((idx, hearts, print_val))
+        
+        if valid_cards:
+            # Ưu tiên: Print thấp nhất -> Tim cao nhất
+            best = min(valid_cards, key=lambda x: (x[2], -x[1]))
+            best_idx, best_hearts, best_print = best
+            emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
+            final_choice = (emoji, 0.5, f"Mode 3 - Hearts {best_hearts} + Print #{best_print}")
+    
+    # MODE 2: CHỈ PRINT (CHẬM NHẤT)
+    elif grab_mode == 2 and ocr_data:
+        valid_prints = [(idx, val) for idx, val in ocr_data if print_min <= val <= print_max]
+        
+        if valid_prints:
+            best_idx, best_print = min(valid_prints, key=lambda x: x[1])
+            emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
+            final_choice = (emoji, 0.7, f"Mode 2 - Print #{best_print}")
+    
+    # THỰC HIỆN GRAB
     if final_choice:
         emoji, delay, reason = final_choice
         print(f"[GRAB | Bot {bot_num}] 🎯 Quyết định nhặt {emoji}. Lý do: {reason}", flush=True)
@@ -327,14 +377,11 @@ async def handle_grab(bot, msg, bot_num):
         
         asyncio.create_task(grab_action())
 
-
-# --- KHỞI TẠO BOT (ĐÃ FIX LỖI KHỞI ĐỘNG & LỌC LOG) ---
+# --- KHỞI TẠO BOT ---
 def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    # [FIX QUAN TRỌNG] Dùng 'guild_subscriptions=False' (bản cũ) thay vì 'GuildSubscriptionOptions' (bản mới)
-    # Điều này sửa lỗi AttributeError khi khởi động
     bot = discord.Client(self_bot=True, heartbeat_timeout=60.0, guild_subscriptions=False)
     
     try: bot_identifier = int(bot_id_str.split('_')[1])
@@ -349,18 +396,14 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
     async def on_message(msg):
         if not is_main: return
         
-        # --- LỌC LOG: CHỈ XỬ LÝ KÊNH ĐƯỢC CẤU HÌNH ---
-        # Kiểm tra ID kênh có trong danh sách web không
         target_server = next((s for s in servers if s.get('main_channel_id') == str(msg.channel.id)), None)
         
-        # Nếu không phải kênh quan tâm -> Dừng ngay (Không in log rác)
         if not target_server: return
 
         if "dropping" in msg.content.lower():
-            print(f"[DEBUG] 👀 Bot {bot_id_str} thấy Drop tại kênh ĐÚNG {msg.channel.id}", flush=True)
+            print(f"[DEBUG] 👀 Bot {bot_id_str} thấy Drop tại kênh {msg.channel.id}", flush=True)
 
         try:
-            # Kiểm tra ID của Karuta (6469...) hoặc Karibbit (1311...)
             if (msg.author.id == int(karuta_id) or msg.author.id == int(karibbit_id)) and "dropping" in msg.content.lower():
                 print(f"[DEBUG] ✅ PHÁT HIỆN DROP! Đang xử lý...", flush=True)
                 await handle_grab(bot, msg, bot_identifier)
@@ -389,87 +432,508 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shadow OCR Control</title>
+    <title>🎴 Shadow OCR Premium Control</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        body { background: #0a0a0a; color: #f0f0f0; font-family: monospace; padding: 20px; }
-        .panel { background: #111; border: 1px solid #333; padding: 20px; margin-bottom: 20px; border-radius: 8px; }
-        .btn { background: #333; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; }
-        .btn:hover { background: #444; }
-        .input-group { margin-bottom: 10px; display: flex; gap: 10px; align-items: center; }
-        input { background: #000; border: 1px solid #444; color: white; padding: 8px; border-radius: 4px; }
-        h2 { border-bottom: 2px solid #8b0000; padding-bottom: 10px; color: #f0f0f0; }
-        .ocr-badge { background: #00008b; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a0a1a 50%, #0a0a1a 100%);
+            color: #f0f0f0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .header {
+            text-align: center;
+            padding: 30px 0;
+            background: linear-gradient(135deg, #8b0000, #4b0082);
+            border-radius: 15px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 40px rgba(139, 0, 0, 0.5);
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            text-shadow: 0 0 20px rgba(255, 215, 0, 0.8);
+            margin-bottom: 10px;
+        }
+        
+        .uptime {
+            color: #ffd700;
+            font-size: 1.1em;
+            text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+        }
+        
+        .control-bar {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #333, #555);
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            cursor: pointer;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #006400, #008000);
+        }
+        
+        .btn-danger {
+            background: linear-gradient(135deg, #8b0000, #b22222);
+        }
+        
+        .master-panel {
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            border: 2px solid #ffd700;
+            padding: 25px;
+            margin-bottom: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(255, 215, 0, 0.3);
+        }
+        
+        .master-panel h2 {
+            color: #ffd700;
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+            text-shadow: 0 0 15px rgba(255, 215, 0, 0.8);
+        }
+        
+        .master-controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+        
+        .control-group {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 215, 0, 0.3);
+        }
+        
+        .control-group h4 {
+            color: #ffd700;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+        
+        .panel {
+            background: linear-gradient(135deg, #111, #1a1a1a);
+            border: 1px solid #444;
+            padding: 25px;
+            margin-bottom: 25px;
+            border-radius: 15px;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+            transition: all 0.3s;
+        }
+        
+        .panel:hover {
+            border-color: #8b0000;
+            box-shadow: 0 10px 40px rgba(139, 0, 0, 0.4);
+        }
+        
+        .panel h2 {
+            border-bottom: 3px solid #8b0000;
+            padding-bottom: 15px;
+            color: #ffd700;
+            font-size: 1.6em;
+            text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .input-group {
+            margin-bottom: 15px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        
+        .input-group label {
+            min-width: 100px;
+            color: #ccc;
+            font-weight: bold;
+        }
+        
+        input, select {
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid #555;
+            color: white;
+            padding: 10px;
+            border-radius: 6px;
+            flex: 1;
+            min-width: 100px;
+            transition: all 0.3s;
+        }
+        
+        input:focus, select:focus {
+            border-color: #ffd700;
+            outline: none;
+            box-shadow: 0 0 10px rgba(255, 215, 0, 0.3);
+        }
+        
+        .bot-card {
+            background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
+            padding: 20px;
+            margin-bottom: 15px;
+            border-radius: 12px;
+            border: 1px solid #444;
+            transition: all 0.3s;
+        }
+        
+        .bot-card:hover {
+            border-color: #ffd700;
+            transform: translateX(5px);
+        }
+        
+        .bot-card h3 {
+            color: #ffd700;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .mode-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .mode-btn {
+            flex: 1;
+            padding: 10px;
+            background: #333;
+            border: 2px solid #555;
+            color: white;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.3s;
+            text-align: center;
+        }
+        
+        .mode-btn.active {
+            background: linear-gradient(135deg, #ffd700, #ffed4e);
+            color: #000;
+            border-color: #ffd700;
+            box-shadow: 0 0 20px rgba(255, 215, 0, 0.6);
+        }
+        
+        .range-input {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .range-input input {
+            flex: 1;
+        }
+        
+        .range-input span {
+            color: #ffd700;
+            font-weight: bold;
+        }
+        
+        .toggle-btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+        
+        .toggle-btn.active {
+            background: linear-gradient(135deg, #006400, #008000);
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.4);
+        }
+        
+        .delete-server {
+            background: linear-gradient(135deg, #8b0000, #b22222);
+            padding: 8px 15px;
+            border-radius: 6px;
+            border: none;
+            color: white;
+            cursor: pointer;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        .pulse {
+            animation: pulse 2s infinite;
+        }
     </style>
 </head>
 <body>
-    <h1>Shadow Network - OCR Edition</h1>
-    <div style="margin-bottom: 20px;">
-         <button id="add-server-btn" class="btn" style="background: #006400;"><i class="fas fa-plus"></i> Add Server</button>
+    <div class="header">
+        <h1><i class="fas fa-crown"></i> Shadow OCR Premium Control <i class="fas fa-crown"></i></h1>
+        <div class="uptime pulse">⏱️ Uptime: <span id="uptime">00:00:00</span></div>
     </div>
-    {% for server in servers %}
-    <div class="panel" data-server-id="{{ server.id }}">
-        <h2>{{ server.name }} <button class="btn delete-server" style="float:right; background:#8b0000; font-size:0.8em;">X</button></h2>
-        <div class="input-group">
-            <label>Channels:</label>
-            <input type="text" class="channel-input" data-field="main_channel_id" value="{{ server.main_channel_id or '' }}" placeholder="Main Channel ID">
-            <input type="text" class="channel-input" data-field="ktb_channel_id" value="{{ server.ktb_channel_id or '' }}" placeholder="KTB Channel ID">
-        </div>
-        {% for bot in main_bots %}
-        <div style="background: #1a1a1a; padding: 10px; margin-bottom: 10px; border-radius: 4px;">
-            <h3>{{ bot.name }}</h3>
-            <div class="input-group">
-                <label>Hearts:</label>
-                <input type="number" class="heart-min" value="{{ server['heart_threshold_' + bot.id] or 50 }}" placeholder="Min">
-                <input type="number" class="heart-max" value="{{ server['max_heart_threshold_' + bot.id] or 99999 }}" placeholder="Max">
-                <button class="btn toggle-grab" data-bot="{{ bot.id }}">{{ 'DISABLE GRAB' if server['auto_grab_enabled_' + bot.id] else 'ENABLE GRAB' }}</button>
+
+    <div class="control-bar">
+        <button id="add-server-btn" class="btn btn-primary">
+            <i class="fas fa-plus-circle"></i> Add New Server
+        </button>
+        <button id="sync-all-btn" class="btn" style="background: linear-gradient(135deg, #4b0082, #8b008b);">
+            <i class="fas fa-sync"></i> Sync All from Master
+        </button>
+    </div>
+
+    <!-- MASTER CONTROL PANEL -->
+    <div class="master-panel">
+        <h2><i class="fas fa-cog"></i> Master Control Panel</h2>
+        <div class="master-controls">
+            <div class="control-group">
+                <h4><i class="fas fa-gamepad"></i> Grab Mode</h4>
+                <select id="master-mode">
+                    <option value="1">Mode 1: Hearts Only</option>
+                    <option value="2">Mode 2: Print Only</option>
+                    <option value="3">Mode 3: Hearts + Print</option>
+                </select>
             </div>
-            <div class="input-group" style="border-top: 1px dashed #444; padding-top: 10px;">
-                <label><i class="fas fa-eye"></i> OCR Print:</label>
-                <input type="number" class="print-limit" value="{{ server['print_threshold_' + bot.id] or 1000 }}" placeholder="Max Print to Grab">
-                <button class="btn toggle-ocr" data-bot="{{ bot.id }}" style="background: {{ '#006400' if server['ocr_enabled_' + bot.id] else '#333' }};">
-                    {{ 'OCR: ON' if server['ocr_enabled_' + bot.id] else 'OCR: OFF' }}
+            
+            <div class="control-group">
+                <h4><i class="fas fa-heart"></i> Hearts Range</h4>
+                <div class="range-input">
+                    <input type="number" id="master-heart-min" placeholder="Min" value="50">
+                    <span>~</span>
+                    <input type="number" id="master-heart-max" placeholder="Max" value="99999">
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <h4><i class="fas fa-print"></i> Print Range</h4>
+                <div class="range-input">
+                    <input type="number" id="master-print-min" placeholder="Min" value="1">
+                    <span>~</span>
+                    <input type="number" id="master-print-max" placeholder="Max" value="1000">
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <h4><i class="fas fa-toggle-on"></i> Grab Status</h4>
+                <button id="master-grab-toggle" class="btn" style="width: 100%;">
+                    <i class="fas fa-power-off"></i> Enable All Grab
                 </button>
             </div>
+        </div>
+    </div>
+
+    <!-- SERVER PANELS -->
+    {% for server in servers %}
+    <div class="panel" data-server-id="{{ server.id }}">
+        <h2>
+            <span><i class="fas fa-server"></i> {{ server.name }}</span>
+            <button class="delete-server"><i class="fas fa-trash"></i> Delete</button>
+        </h2>
+        
+        <div class="input-group">
+            <label><i class="fas fa-hashtag"></i> Main Channel:</label>
+            <input type="text" class="channel-input" data-field="main_channel_id" 
+                   value="{{ server.main_channel_id or '' }}" placeholder="Main Channel ID">
+        </div>
+        
+        <div class="input-group">
+            <label><i class="fas fa-hashtag"></i> KTB Channel:</label>
+            <input type="text" class="channel-input" data-field="ktb_channel_id" 
+                   value="{{ server.ktb_channel_id or '' }}" placeholder="KTB Channel ID">
+        </div>
+        
+        {% for bot in main_bots %}
+        <div class="bot-card">
+            <h3>
+                <i class="fas fa-robot"></i> {{ bot.name }}
+                <span style="margin-left: auto; font-size: 0.8em; color: #888;">Bot {{ bot.id }}</span>
+            </h3>
+            
+            <!-- MODE SELECTOR -->
+            <div class="mode-selector">
+                <button class="mode-btn {% if server['grab_mode_' + bot.id] == 1 or not server.get('grab_mode_' + bot.id) %}active{% endif %}" 
+                        data-mode="1" data-bot="{{ bot.id }}">
+                    <i class="fas fa-heart"></i> Mode 1: Hearts
+                </button>
+                <button class="mode-btn {% if server['grab_mode_' + bot.id] == 2 %}active{% endif %}" 
+                        data-mode="2" data-bot="{{ bot.id }}">
+                    <i class="fas fa-print"></i> Mode 2: Print
+                </button>
+                <button class="mode-btn {% if server['grab_mode_' + bot.id] == 3 %}active{% endif %}" 
+                        data-mode="3" data-bot="{{ bot.id }}">
+                    <i class="fas fa-star"></i> Mode 3: Both
+                </button>
+            </div>
+            
+            <!-- HEARTS RANGE -->
+            <div class="input-group">
+                <label><i class="fas fa-heart"></i> Hearts:</label>
+                <div class="range-input">
+                    <input type="number" class="heart-min" value="{{ server['heart_min_' + bot.id] or 50 }}" placeholder="Min">
+                    <span>~</span>
+                    <input type="number" class="heart-max" value="{{ server['heart_max_' + bot.id] or 99999 }}" placeholder="Max">
+                </div>
+            </div>
+            
+            <!-- PRINT RANGE -->
+            <div class="input-group">
+                <label><i class="fas fa-print"></i> Print:</label>
+                <div class="range-input">
+                    <input type="number" class="print-min" value="{{ server['print_min_' + bot.id] or 1 }}" placeholder="Min">
+                    <span>~</span>
+                    <input type="number" class="print-max" value="{{ server['print_max_' + bot.id] or 1000 }}" placeholder="Max">
+                </div>
+            </div>
+            
+            <!-- GRAB TOGGLE -->
+            <button class="btn toggle-grab {% if server['auto_grab_enabled_' + bot.id] %}active{% endif %}" 
+                    data-bot="{{ bot.id }}" style="width: 100%;">
+                <i class="fas fa-power-off"></i> 
+                {{ 'DISABLE GRAB' if server['auto_grab_enabled_' + bot.id] else 'ENABLE GRAB' }}
+            </button>
         </div>
         {% endfor %}
     </div>
     {% endfor %}
     
     <script>
+        // Uptime counter
+        const startTime = {{ start_time }};
+        setInterval(() => {
+            const elapsed = Math.floor(Date.now() / 1000 - startTime);
+            const h = Math.floor(elapsed / 3600).toString().padStart(2, '0');
+            const m = Math.floor((elapsed % 3600) / 60).toString().padStart(2, '0');
+            const s = (elapsed % 60).toString().padStart(2, '0');
+            document.getElementById('uptime').textContent = `${h}:${m}:${s}`;
+        }, 1000);
+
         async function post(url, data) {
-            await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
+            await fetch(url, { 
+                method: 'POST', 
+                headers: {'Content-Type': 'application/json'}, 
+                body: JSON.stringify(data) 
+            });
             location.reload();
         }
+        
+        // Add server
         document.getElementById('add-server-btn').addEventListener('click', () => {
             const name = prompt("Server Name:");
             if(name) post('/api/add_server', {name: name});
         });
+        
+        // Delete server
         document.querySelectorAll('.delete-server').forEach(btn => {
             btn.addEventListener('click', () => {
-                if(confirm('Delete?')) post('/api/delete_server', {server_id: btn.closest('.panel').dataset.serverId});
+                if(confirm('Delete this server?')) {
+                    post('/api/delete_server', {
+                        server_id: btn.closest('.panel').dataset.serverId
+                    });
+                }
             });
         });
+        
+        // Update channels
         document.querySelectorAll('.channel-input').forEach(inp => {
             inp.addEventListener('change', () => {
                 const sid = inp.closest('.panel').dataset.serverId;
                 const field = inp.dataset.field;
-                fetch('/api/update_server_field', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({server_id: sid, [field]: inp.value}) });
+                fetch('/api/update_server_field', { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({server_id: sid, [field]: inp.value}) 
+                });
             });
         });
+        
+        // Mode selector
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const card = btn.closest('.bot-card');
+                const botId = btn.dataset.bot;
+                const mode = btn.dataset.mode;
+                const serverId = btn.closest('.panel').dataset.serverId;
+                
+                // Remove active from siblings
+                card.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                // Save mode
+                fetch('/api/update_bot_mode', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        server_id: serverId,
+                        bot_id: botId,
+                        mode: mode
+                    })
+                });
+            });
+        });
+        
+        // Toggle grab
         document.querySelectorAll('.toggle-grab').forEach(btn => {
             btn.addEventListener('click', () => {
-                const p = btn.closest('.panel');
-                const min = btn.parentElement.querySelector('.heart-min').value;
-                const max = btn.parentElement.querySelector('.heart-max').value;
-                post('/api/harvest_toggle', {server_id: p.dataset.serverId, node: btn.dataset.bot, threshold: min, max_threshold: max});
+                const card = btn.closest('.bot-card');
+                const serverId = btn.closest('.panel').dataset.serverId;
+                const botId = btn.dataset.bot;
+                
+                const heartMin = card.querySelector('.heart-min').value;
+                const heartMax = card.querySelector('.heart-max').value;
+                const printMin = card.querySelector('.print-min').value;
+                const printMax = card.querySelector('.print-max').value;
+                
+                post('/api/harvest_toggle', {
+                    server_id: serverId,
+                    node: botId,
+                    heart_min: heartMin,
+                    heart_max: heartMax,
+                    print_min: printMin,
+                    print_max: printMax
+                });
             });
         });
-        document.querySelectorAll('.toggle-ocr').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const limit = btn.parentElement.querySelector('.print-limit').value;
-                post('/api/ocr_toggle', {server_id: btn.closest('.panel').dataset.serverId, node: btn.dataset.bot, limit: limit});
-            });
+        
+        // Sync all from master
+        document.getElementById('sync-all-btn').addEventListener('click', () => {
+            if(confirm('Sync all bots with Master Panel settings?')) {
+                const mode = document.getElementById('master-mode').value;
+                const heartMin = document.getElementById('master-heart-min').value;
+                const heartMax = document.getElementById('master-heart-max').value;
+                const printMin = document.getElementById('master-print-min').value;
+                const printMax = document.getElementById('master-print-max').value;
+                
+                post('/api/sync_all', {
+                    mode, heartMin, heartMax, printMin, printMax
+                });
+            }
+        });
+        
+        // Master grab toggle
+        document.getElementById('master-grab-toggle').addEventListener('click', () => {
+            if(confirm('Toggle grab for ALL bots?')) {
+                post('/api/toggle_all_grab', {});
+            }
         });
     </script>
 </body>
@@ -478,86 +942,125 @@ HTML_TEMPLATE = """
 
 @app.route("/")
 def index():
-    main_bots = [{"id": str(i+1), "name": f"Main {i+1}"} for i in range(len(main_tokens))]
-    return render_template_string(HTML_TEMPLATE, servers=servers, main_bots=main_bots)
-
-@app.route("/api/ocr_toggle", methods=['POST'])
-def api_ocr_toggle():
-    data = request.json
-    server = next((s for s in servers if s['id'] == data['server_id']), None)
-    if server:
-        node = str(data['node'])
-        key_enable = f'ocr_enabled_{node}'
-        key_limit = f'print_threshold_{node}'
-        server[key_enable] = not server.get(key_enable, False)
-        server[key_limit] = int(data.get('limit', 1000))
-        save_settings()
-    return jsonify({'status': 'success'})
+    main_bots = [{"id": str(i+1), "name": f"Main Bot {i+1}"} for i in range(len(main_tokens))]
+    return render_template_string(HTML_TEMPLATE, servers=servers, main_bots=main_bots, 
+                                   start_time=server_start_time)
 
 @app.route("/api/add_server", methods=['POST'])
 def api_add_server():
     name = request.json.get('name')
-    if not name: return jsonify({'status': 'error', 'message': 'Tên server là bắt buộc.'}), 400
+    if not name: return jsonify({'status': 'error'}), 400
     new_server = {"id": f"server_{uuid.uuid4().hex}", "name": name}
     main_bots_count = len([t for t in main_tokens if t.strip()])
     for i in range(main_bots_count):
         bot_num = i + 1
         new_server[f'auto_grab_enabled_{bot_num}'] = False
-        new_server[f'heart_threshold_{bot_num}'] = 50
-        new_server[f'max_heart_threshold_{bot_num}'] = 99999
-        new_server[f'ocr_enabled_{bot_num}'] = False
-        new_server[f'print_threshold_{bot_num}'] = 1000
+        new_server[f'grab_mode_{bot_num}'] = 1
+        new_server[f'heart_min_{bot_num}'] = 50
+        new_server[f'heart_max_{bot_num}'] = 99999
+        new_server[f'print_min_{bot_num}'] = 1
+        new_server[f'print_max_{bot_num}'] = 1000
     servers.append(new_server)
     save_settings()
-    return jsonify({'status': 'success', 'message': f'✅ Server "{name}" đã được thêm.', 'reload': True})
+    return jsonify({'status': 'success'})
 
 @app.route("/api/delete_server", methods=['POST'])
 def api_delete_server():
     server_id = request.json.get('server_id')
     servers[:] = [s for s in servers if s.get('id') != server_id]
     save_settings()
-    return jsonify({'status': 'success', 'message': f'🗑️ Server đã được xóa.', 'reload': True})
-
-def find_server(server_id): return next((s for s in servers if s.get('id') == server_id), None)
+    return jsonify({'status': 'success'})
 
 @app.route("/api/update_server_field", methods=['POST'])
 def api_update_server_field():
     data = request.json
-    server = find_server(data.get('server_id'))
-    if not server: return jsonify({'status': 'error', 'message': 'Không tìm thấy server.'}), 404
+    server = next((s for s in servers if s.get('id') == data.get('server_id')), None)
+    if not server: return jsonify({'status': 'error'}), 404
     for key, value in data.items():
         if key != 'server_id': server[key] = value
+    save_settings()
+    return jsonify({'status': 'success'})
+
+@app.route("/api/update_bot_mode", methods=['POST'])
+def api_update_bot_mode():
+    data = request.json
+    server = next((s for s in servers if s.get('id') == data.get('server_id')), None)
+    if not server: return jsonify({'status': 'error'}), 404
+    bot_id = data.get('bot_id')
+    mode = int(data.get('mode', 1))
+    server[f'grab_mode_{bot_id}'] = mode
     save_settings()
     return jsonify({'status': 'success'})
 
 @app.route("/api/harvest_toggle", methods=['POST'])
 def api_harvest_toggle():
     data = request.json
-    server, node_str = find_server(data.get('server_id')), data.get('node')
-    if not server or not node_str: return jsonify({'status': 'error'}), 400
-    node = str(node_str)
+    server = next((s for s in servers if s.get('id') == data.get('server_id')), None)
+    if not server: return jsonify({'status': 'error'}), 400
+    node = str(data.get('node'))
+    
     grab_key = f'auto_grab_enabled_{node}'
     server[grab_key] = not server.get(grab_key, False)
-    try:
-        server[f'heart_threshold_{node}'] = int(data.get('threshold', 50))
-        server[f'max_heart_threshold_{node}'] = int(data.get('max_threshold', 99999))
-    except: pass
+    
+    server[f'heart_min_{node}'] = int(data.get('heart_min', 50))
+    server[f'heart_max_{node}'] = int(data.get('heart_max', 99999))
+    server[f'print_min_{node}'] = int(data.get('print_min', 1))
+    server[f'print_max_{node}'] = int(data.get('print_max', 1000))
+    
     save_settings()
     return jsonify({'status': 'success'})
 
-@app.route("/api/save_settings", methods=['POST'])
-def api_save_settings(): save_settings(); return jsonify({'status': 'success'})
+@app.route("/api/sync_all", methods=['POST'])
+def api_sync_all():
+    data = request.json
+    mode = int(data.get('mode', 1))
+    heart_min = int(data.get('heartMin', 50))
+    heart_max = int(data.get('heartMax', 99999))
+    print_min = int(data.get('printMin', 1))
+    print_max = int(data.get('printMax', 1000))
+    
+    for server in servers:
+        for i in range(len(main_tokens)):
+            bot_num = i + 1
+            server[f'grab_mode_{bot_num}'] = mode
+            server[f'heart_min_{bot_num}'] = heart_min
+            server[f'heart_max_{bot_num}'] = heart_max
+            server[f'print_min_{bot_num}'] = print_min
+            server[f'print_max_{bot_num}'] = print_max
+    
+    save_settings()
+    return jsonify({'status': 'success'})
+
+@app.route("/api/toggle_all_grab", methods=['POST'])
+def api_toggle_all_grab():
+    # Check current state - if any bot is disabled, enable all, otherwise disable all
+    any_disabled = False
+    for server in servers:
+        for i in range(len(main_tokens)):
+            bot_num = i + 1
+            if not server.get(f'auto_grab_enabled_{bot_num}', False):
+                any_disabled = True
+                break
+    
+    new_state = any_disabled
+    
+    for server in servers:
+        for i in range(len(main_tokens)):
+            bot_num = i + 1
+            server[f'auto_grab_enabled_{bot_num}'] = new_state
+    
+    save_settings()
+    return jsonify({'status': 'success'})
 
 if __name__ == "__main__":
-    print("🚀 Shadow Grabber - OCR Edition Starting...", flush=True)
+    print("🚀 Shadow Grabber - Premium Edition Starting...", flush=True)
     load_settings()
 
-    # CHỈ KHỞI CHẠY BOT CHÍNH (Bot Nhặt)
     for i, token in enumerate(main_tokens):
         if token.strip():
             threading.Thread(target=initialize_and_run_bot, args=(token.strip(), f"main_{i+1}", True), daemon=True).start()
     
-    print("⚠️ Chế độ: CHỈ NHẶT (GRAB ONLY) - Đã tắt Spam Sub-bots", flush=True)
+    print("⚠️ Chế độ: GRAB ONLY - Optimized (Bot 1 đọc, các bot khác nhặt)", flush=True)
 
     threading.Thread(target=periodic_task, args=(1800, save_settings, "Save"), daemon=True).start()
     threading.Thread(target=periodic_task, args=(300, health_monitoring_check, "Health"), daemon=True).start()
