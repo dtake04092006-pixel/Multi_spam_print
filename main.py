@@ -219,7 +219,7 @@ def scan_image_for_prints(image_url):
         return []
 
 # ==============================================================================
-# <<< LOGIC NHẶT THẺ - PHIÊN BẢN MỚI (CHỈ BOT 1 ĐỌC, CHIA SẺ CHO CÁC BOT KHÁC) >>>
+# <<< LOGIC NHẶT THẺ - PHIÊN BẢN MỚI (MULTI-MODE) >>>
 # ==============================================================================
 async def scan_and_share_drop_info(bot, msg, channel_id):
     """Bot 1 quét thông tin và chia sẻ cho tất cả bot khác"""
@@ -279,24 +279,22 @@ async def scan_and_share_drop_info(bot, msg, channel_id):
     print(f"[SCAN] ✅ Bot 1 hoàn tất quét. Dữ liệu đã được chia sẻ.", flush=True)
 
 async def handle_grab(bot, msg, bot_num):
-    """Logic nhặt thẻ cho mỗi bot dựa trên dữ liệu chia sẻ"""
+    """Logic nhặt thẻ Multi-Mode: Kiểm tra tất cả mode đang bật và chọn cái tốt nhất"""
     
     channel_id = msg.channel.id
     target_server = next((s for s in servers if s.get('main_channel_id') == str(channel_id)), None)
     if not target_server: return
 
-    bot_id_str = f'main_{bot_num}'
     auto_grab = target_server.get(f'auto_grab_enabled_{bot_num}', False)
-    
     if not auto_grab: 
         return
 
     # CHỈ BOT 1 QUÉT - CÁC BOT KHÁC CHỜ
     if bot_num == 1:
         await scan_and_share_drop_info(bot, msg, channel_id)
-        await asyncio.sleep(0.3)  # Delay nhỏ để bot 1 kịp nhặt trước
+        await asyncio.sleep(0.3)  # Delay nhỏ
     else:
-        # Các bot khác chờ 0.5s để bot 1 quét xong
+        # Các bot khác chờ
         await asyncio.sleep(random.uniform(0.5, 0.8))
     
     # Lấy dữ liệu chia sẻ
@@ -308,61 +306,61 @@ async def handle_grab(bot, msg, bot_num):
         heart_data = shared_drop_info["heart_data"]
         ocr_data = shared_drop_info["ocr_data"]
     
-    # Lấy cấu hình
-    grab_mode = target_server.get(f'grab_mode_{bot_num}', 1)  # 1: Tim, 2: Print, 3: Cả hai
-    
+    # Lấy cấu hình các mode
+    mode1_active = target_server.get(f'mode_1_active_{bot_num}', False) # Tim
+    mode2_active = target_server.get(f'mode_2_active_{bot_num}', False) # Print
+    mode3_active = target_server.get(f'mode_3_active_{bot_num}', False) # Cả hai
+
     heart_min = target_server.get(f'heart_min_{bot_num}', 50)
     heart_max = target_server.get(f'heart_max_{bot_num}', 99999)
-    
     print_min = target_server.get(f'print_min_{bot_num}', 1)
     print_max = target_server.get(f'print_max_{bot_num}', 1000)
     
-    final_choice = None
-    
-    # MODE 1: CHỈ TIM (NHANH NHẤT)
-    if grab_mode == 1 and heart_data:
-        valid_cards = [(idx, hearts) for idx, hearts in enumerate(heart_data) if heart_min <= hearts <= heart_max]
-        
-        if valid_cards:
-            best_idx, best_hearts = max(valid_cards, key=lambda x: x[1])
-            emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
-            final_choice = (emoji, 0.3, f"Mode 1 - Hearts {best_hearts}")
-    
-    # MODE 3: CẢ TIM VÀ PRINT (ƯU TIÊN THỨ 2)
-    elif grab_mode == 3 and heart_data and ocr_data:
-        # Tìm thẻ thỏa MÃN CẢ HAI ĐIỀU KIỆN
+    candidates = [] # Danh sách các nước đi có thể (priority, emoji, delay, reason)
+    # Priority: 3 (Mode 3 - Cao nhất) > 2 (Mode 2) > 1 (Mode 1)
+
+    # --- KIỂM TRA MODE 3: CẢ TIM VÀ PRINT (Ưu tiên cao nhất) ---
+    if mode3_active and heart_data and ocr_data:
         valid_cards = []
-        
-        # Tạo dict print theo index
         print_dict = {idx: val for idx, val in ocr_data}
-        
         for idx, hearts in enumerate(heart_data):
             if idx in print_dict:
                 print_val = print_dict[idx]
-                # Kiểm tra CẢ tim VÀ print
                 if (heart_min <= hearts <= heart_max) and (print_min <= print_val <= print_max):
                     valid_cards.append((idx, hearts, print_val))
         
         if valid_cards:
-            # Ưu tiên: Print thấp nhất -> Tim cao nhất
-            best = min(valid_cards, key=lambda x: (x[2], -x[1]))
+            best = min(valid_cards, key=lambda x: (x[2], -x[1])) # Print thấp nhất -> Tim cao nhất
             best_idx, best_hearts, best_print = best
             emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
-            final_choice = (emoji, 0.5, f"Mode 3 - Hearts {best_hearts} + Print #{best_print}")
-    
-    # MODE 2: CHỈ PRINT (CHẬM NHẤT)
-    elif grab_mode == 2 and ocr_data:
+            candidates.append((3, emoji, 0.5, f"Mode 3 [Both] - Hearts {best_hearts} + Print #{best_print}"))
+
+    # --- KIỂM TRA MODE 2: CHỈ PRINT ---
+    if mode2_active and ocr_data:
         valid_prints = [(idx, val) for idx, val in ocr_data if print_min <= val <= print_max]
-        
         if valid_prints:
             best_idx, best_print = min(valid_prints, key=lambda x: x[1])
             emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
-            final_choice = (emoji, 0.7, f"Mode 2 - Print #{best_print}")
-    
-    # THỰC HIỆN GRAB
-    if final_choice:
-        emoji, delay, reason = final_choice
-        print(f"[GRAB | Bot {bot_num}] 🎯 Quyết định nhặt {emoji}. Lý do: {reason}", flush=True)
+            candidates.append((2, emoji, 0.7, f"Mode 2 [Print] - Print #{best_print}"))
+
+    # --- KIỂM TRA MODE 1: CHỈ TIM ---
+    if mode1_active and heart_data:
+        valid_cards = [(idx, hearts) for idx, hearts in enumerate(heart_data) if heart_min <= hearts <= heart_max]
+        if valid_cards:
+            best_idx, best_hearts = max(valid_cards, key=lambda x: x[1])
+            emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
+            candidates.append((1, emoji, 0.3, f"Mode 1 [Heart] - Hearts {best_hearts}"))
+            
+    # --- QUYẾT ĐỊNH ---
+    if candidates:
+        # Sắp xếp theo Priority giảm dần (Mode 3 > Mode 2 > Mode 1)
+        # Nếu cùng priority thì lấy cái đầu tiên tìm thấy
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        best_choice = candidates[0]
+        priority, emoji, delay, reason = best_choice
+        
+        print(f"[GRAB | Bot {bot_num}] 🎯 Chọn: {reason} (Priority {priority})", flush=True)
         
         async def grab_action():
             await asyncio.sleep(delay)
@@ -400,9 +398,6 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
         
         if not target_server: return
 
-        if "dropping" in msg.content.lower():
-            print(f"[DEBUG] 👀 Bot {bot_id_str} thấy Drop tại kênh {msg.channel.id}", flush=True)
-
         try:
             if (msg.author.id == int(karuta_id) or msg.author.id == int(karibbit_id)) and "dropping" in msg.content.lower():
                 print(f"[DEBUG] ✅ PHÁT HIỆN DROP! Đang xử lý...", flush=True)
@@ -432,7 +427,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shadow OCR Premium Control</title>
+    <title>Shadow OCR Premium - Multi Mode</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -460,105 +455,66 @@ HTML_TEMPLATE = """
             margin-bottom: 5px;
         }
         
-        .uptime {
-            color: #ffd700;
-            font-size: 0.9em;
-        }
+        .uptime { color: #ffd700; font-size: 0.9em; }
         
         .control-bar {
-            display: flex;
-            gap: 15px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-            justify-content: center;
+            display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; justify-content: center;
         }
         
         .btn {
-            background: linear-gradient(135deg, #333, #555);
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            cursor: pointer;
-            border-radius: 6px;
-            font-size: 0.9em;
-            transition: all 0.3s;
+            background: linear-gradient(135deg, #333, #555); color: white; border: none; padding: 10px 20px;
+            cursor: pointer; border-radius: 6px; font-size: 0.9em; transition: all 0.3s;
             box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
         }
         
         .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 15px rgba(0, 0, 0, 0.4); }
         .btn-primary { background: linear-gradient(135deg, #006400, #008000); }
         
-        /* --- GRID LAYOUT CHO SERVER --- */
         .server-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); /* Tự động chia cột */
-            gap: 20px;
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px;
         }
-
-        .master-panel {
-            background: linear-gradient(135deg, #1a1a2e, #16213e);
-            border: 2px solid #ffd700;
-            padding: 20px;
-            margin-bottom: 30px;
-            border-radius: 15px;
-        }
-        .master-controls { display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; }
-        .control-group { background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; flex: 1; min-width: 200px; text-align: center; }
 
         .panel {
-            background: linear-gradient(135deg, #111, #1a1a1a);
-            border: 1px solid #444;
-            padding: 15px;
-            border-radius: 12px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
-            transition: all 0.3s;
-            display: flex;
-            flex-direction: column;
+            background: linear-gradient(135deg, #111, #1a1a1a); border: 1px solid #444; padding: 15px;
+            border-radius: 12px; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5); transition: all 0.3s;
+            display: flex; flex-direction: column;
         }
         
         .panel:hover { border-color: #8b0000; transform: translateY(-5px); }
         
         .panel h2 {
-            border-bottom: 2px solid #8b0000;
-            padding-bottom: 10px;
-            margin-bottom: 15px;
-            color: #ffd700;
-            font-size: 1.2em;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            border-bottom: 2px solid #8b0000; padding-bottom: 10px; margin-bottom: 15px; color: #ffd700;
+            font-size: 1.2em; display: flex; justify-content: space-between; align-items: center;
         }
         
         .input-group { margin-bottom: 10px; display: flex; gap: 5px; align-items: center; }
         .input-group label { min-width: 40px; font-size: 0.8em; color: #aaa; }
         
-        input, select {
-            background: rgba(0, 0, 0, 0.6);
-            border: 1px solid #555;
-            color: white;
-            padding: 8px;
-            border-radius: 4px;
-            flex: 1;
-            width: 100%; /* Full width trong cột */
+        input {
+            background: rgba(0, 0, 0, 0.6); border: 1px solid #555; color: white; padding: 8px;
+            border-radius: 4px; flex: 1; width: 100%;
         }
         
         .bot-card {
-            background: rgba(255, 255, 255, 0.03);
-            padding: 10px;
-            margin-bottom: 10px;
-            border-radius: 8px;
-            border: 1px solid #333;
+            background: rgba(255, 255, 255, 0.03); padding: 10px; margin-bottom: 10px;
+            border-radius: 8px; border: 1px solid #333;
         }
         
         .bot-card h3 { font-size: 1em; color: #ddd; margin-bottom: 10px; }
         
-        /* Thu nhỏ nút chọn mode để vừa cột */
+        /* New Toggle Button Style */
         .mode-selector { display: flex; gap: 5px; margin-bottom: 10px; }
         .mode-btn { 
-            flex: 1; padding: 5px; font-size: 0.75em; 
-            background: #222; border: 1px solid #444; border-radius: 4px; color: #ccc; cursor: pointer;
+            flex: 1; padding: 5px; font-size: 0.85em; 
+            background: #222; border: 1px solid #444; border-radius: 4px; color: #666; cursor: pointer;
+            transition: all 0.2s;
         }
-        .mode-btn.active { background: #ffd700; color: #000; border-color: #ffd700; font-weight: bold; }
+        .mode-btn:hover { background: #333; }
+        
+        /* Active states for each mode */
+        .mode-btn.active-1 { background: #ff4444; color: white; border-color: #ff0000; } /* Hearts */
+        .mode-btn.active-2 { background: #4444ff; color: white; border-color: #0000ff; } /* Print */
+        .mode-btn.active-3 { background: #ffd700; color: black; border-color: #ffd700; font-weight: bold; } /* Both */
         
         .range-input { display: flex; gap: 5px; align-items: center; }
         .range-input input { width: 50px; text-align: center; }
@@ -574,32 +530,13 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        <h1><i class="fas fa-crown"></i> Shadow OCR Premium</h1>
+        <h1><i class="fas fa-crown"></i> Shadow OCR Multi-Mode</h1>
         <div class="uptime">⏱️ Uptime: <span id="uptime">00:00:00</span></div>
     </div>
 
     <div class="control-bar">
         <button id="add-server-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Add Server</button>
-        <button id="sync-all-btn" class="btn" style="background: #4b0082;"><i class="fas fa-sync"></i> Sync Master</button>
         <button id="master-grab-toggle" class="btn" style="background: #006400;"><i class="fas fa-power-off"></i> Toggle All</button>
-    </div>
-
-    <div class="master-panel">
-        <h3 style="color:#ffd700; text-align:center; margin-bottom:15px;">👑 Master Settings (Apply to All)</h3>
-        <div class="master-controls">
-            <div class="control-group">
-                <select id="master-mode">
-                    <option value="1">❤️ Mode 1: Hearts</option>
-                    <option value="2">📷 Mode 2: Print</option>
-                    <option value="3">⭐ Mode 3: Both</option>
-                </select>
-            </div>
-            <div class="control-group">
-                <div class="range-input">
-                    <input type="number" id="master-print-max" placeholder="Max Print" value="1000">
-                </div>
-            </div>
-        </div>
     </div>
 
     <div class="server-grid">
@@ -623,9 +560,18 @@ HTML_TEMPLATE = """
                 <h3><i class="fas fa-robot"></i> {{ bot.name }}</h3>
                 
                 <div class="mode-selector">
-                    <button class="mode-btn {% if server['grab_mode_' + bot.id] == 1 or not server.get('grab_mode_' + bot.id) %}active{% endif %}" data-mode="1" data-bot="{{ bot.id }}">❤️</button>
-                    <button class="mode-btn {% if server['grab_mode_' + bot.id] == 2 %}active{% endif %}" data-mode="2" data-bot="{{ bot.id }}">📷</button>
-                    <button class="mode-btn {% if server['grab_mode_' + bot.id] == 3 %}active{% endif %}" data-mode="3" data-bot="{{ bot.id }}">⭐</button>
+                    <button class="mode-btn {{ 'active-1' if server['mode_1_active_' + bot.id] else '' }}" 
+                            onclick="toggleMode(this, '1', '{{ bot.id }}', '{{ server.id }}')">
+                        ❤️ Hearts
+                    </button>
+                    <button class="mode-btn {{ 'active-2' if server['mode_2_active_' + bot.id] else '' }}" 
+                            onclick="toggleMode(this, '2', '{{ bot.id }}', '{{ server.id }}')">
+                        📷 Print
+                    </button>
+                    <button class="mode-btn {{ 'active-3' if server['mode_3_active_' + bot.id] else '' }}" 
+                            onclick="toggleMode(this, '3', '{{ bot.id }}', '{{ server.id }}')">
+                        ⭐ Both
+                    </button>
                 </div>
                 
                 <div class="input-group">
@@ -645,7 +591,7 @@ HTML_TEMPLATE = """
                 </div>
                 
                 <button class="toggle-grab {% if server['auto_grab_enabled_' + bot.id] %}active{% endif %}" data-bot="{{ bot.id }}">
-                    {{ 'ON' if server['auto_grab_enabled_' + bot.id] else 'OFF' }}
+                    {{ 'RUNNING' if server['auto_grab_enabled_' + bot.id] else 'STOPPED' }}
                 </button>
             </div>
             {% endfor %}
@@ -665,7 +611,21 @@ HTML_TEMPLATE = """
 
         async function post(url, data) {
             await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
+            // Reload nhẹ nhàng không cần refresh cả trang nếu muốn (nhưng ở đây reload cho chắc)
             location.reload();
+        }
+
+        function toggleMode(btn, mode, botId, serverId) {
+            // Hiệu ứng UI ngay lập tức
+            const activeClass = 'active-' + mode;
+            const isActive = btn.classList.toggle(activeClass);
+            
+            // Gửi API
+            fetch('/api/toggle_bot_mode', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ server_id: serverId, bot_id: botId, mode: mode, active: isActive })
+            });
         }
         
         document.getElementById('add-server-btn').addEventListener('click', () => {
@@ -687,21 +647,12 @@ HTML_TEMPLATE = """
             });
         });
         
-        document.querySelectorAll('.mode-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const card = btn.closest('.bot-card');
-                const botId = btn.dataset.bot;
-                const mode = btn.dataset.mode;
-                const serverId = btn.closest('.panel').dataset.serverId;
-                post('/api/update_bot_mode', { server_id: serverId, bot_id: botId, mode: mode });
-            });
-        });
-        
         document.querySelectorAll('.toggle-grab').forEach(btn => {
             btn.addEventListener('click', () => {
                 const card = btn.closest('.bot-card');
                 const serverId = btn.closest('.panel').dataset.serverId;
                 const botId = btn.dataset.bot;
+                
                 const heartMin = card.querySelector('.heart-min').value;
                 const heartMax = card.querySelector('.heart-max').value;
                 const printMin = card.querySelector('.print-min').value;
@@ -713,15 +664,6 @@ HTML_TEMPLATE = """
                     print_min: printMin, print_max: printMax
                 });
             });
-        });
-        
-        document.getElementById('sync-all-btn').addEventListener('click', () => {
-            if(confirm('Sync settings to ALL bots?')) {
-                const mode = document.getElementById('master-mode').value;
-                const printMax = document.getElementById('master-print-max').value;
-                // Default values for others
-                post('/api/sync_all', { mode: mode, heartMin: 50, heartMax: 99999, printMin: 1, printMax: printMax });
-            }
         });
         
         document.getElementById('master-grab-toggle').addEventListener('click', () => {
@@ -747,7 +689,11 @@ def api_add_server():
     for i in range(main_bots_count):
         bot_num = i + 1
         new_server[f'auto_grab_enabled_{bot_num}'] = False
-        new_server[f'grab_mode_{bot_num}'] = 1
+        # Mặc định bật Mode 1
+        new_server[f'mode_1_active_{bot_num}'] = True 
+        new_server[f'mode_2_active_{bot_num}'] = False
+        new_server[f'mode_3_active_{bot_num}'] = False
+        
         new_server[f'heart_min_{bot_num}'] = 50
         new_server[f'heart_max_{bot_num}'] = 99999
         new_server[f'print_min_{bot_num}'] = 1
@@ -773,14 +719,19 @@ def api_update_server_field():
     save_settings()
     return jsonify({'status': 'success'})
 
-@app.route("/api/update_bot_mode", methods=['POST'])
-def api_update_bot_mode():
+@app.route("/api/toggle_bot_mode", methods=['POST'])
+def api_toggle_bot_mode():
     data = request.json
     server = next((s for s in servers if s.get('id') == data.get('server_id')), None)
     if not server: return jsonify({'status': 'error'}), 404
+    
     bot_id = data.get('bot_id')
-    mode = int(data.get('mode', 1))
-    server[f'grab_mode_{bot_id}'] = mode
+    mode = data.get('mode')
+    active = data.get('active')
+    
+    key = f'mode_{mode}_active_{bot_id}'
+    server[key] = active
+    
     save_settings()
     return jsonify({'status': 'success'})
 
@@ -802,30 +753,8 @@ def api_harvest_toggle():
     save_settings()
     return jsonify({'status': 'success'})
 
-@app.route("/api/sync_all", methods=['POST'])
-def api_sync_all():
-    data = request.json
-    mode = int(data.get('mode', 1))
-    heart_min = int(data.get('heartMin', 50))
-    heart_max = int(data.get('heartMax', 99999))
-    print_min = int(data.get('printMin', 1))
-    print_max = int(data.get('printMax', 1000))
-    
-    for server in servers:
-        for i in range(len(main_tokens)):
-            bot_num = i + 1
-            server[f'grab_mode_{bot_num}'] = mode
-            server[f'heart_min_{bot_num}'] = heart_min
-            server[f'heart_max_{bot_num}'] = heart_max
-            server[f'print_min_{bot_num}'] = print_min
-            server[f'print_max_{bot_num}'] = print_max
-    
-    save_settings()
-    return jsonify({'status': 'success'})
-
 @app.route("/api/toggle_all_grab", methods=['POST'])
 def api_toggle_all_grab():
-    # Check current state - if any bot is disabled, enable all, otherwise disable all
     any_disabled = False
     for server in servers:
         for i in range(len(main_tokens)):
@@ -835,7 +764,6 @@ def api_toggle_all_grab():
                 break
     
     new_state = any_disabled
-    
     for server in servers:
         for i in range(len(main_tokens)):
             bot_num = i + 1
@@ -845,14 +773,14 @@ def api_toggle_all_grab():
     return jsonify({'status': 'success'})
 
 if __name__ == "__main__":
-    print("🚀 Shadow Grabber - Premium Edition Starting...", flush=True)
+    print("🚀 Shadow Grabber - Multi Mode Edition Starting...", flush=True)
     load_settings()
 
     for i, token in enumerate(main_tokens):
         if token.strip():
             threading.Thread(target=initialize_and_run_bot, args=(token.strip(), f"main_{i+1}", True), daemon=True).start()
     
-    print("⚠️ Chế độ: GRAB ONLY - Optimized (Bot 1 đọc, các bot khác nhặt)", flush=True)
+    print("⚠️ Chế độ: MULTI MODE - Có thể bật nhiều mode cùng lúc", flush=True)
 
     threading.Thread(target=periodic_task, args=(1800, save_settings, "Save"), daemon=True).start()
     threading.Thread(target=periodic_task, args=(300, health_monitoring_check, "Health"), daemon=True).start()
