@@ -611,9 +611,7 @@ HTML_TEMPLATE = """
                 <button class="toggle-grab {% if server['auto_grab_enabled_' + bot.id] %}active{% endif %}" data-bot="{{ bot.id }}">
                     {{ 'RUNNING' if server['auto_grab_enabled_' + bot.id] else 'STOPPED' }}
                 </button>
-            </div>
-            </div>
-            {% endfor %}
+            </div> {% endfor %}
         </div>
         {% endfor %}
     </div>
