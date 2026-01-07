@@ -432,7 +432,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎴 Shadow OCR Premium Control</title>
+    <title>Shadow OCR Premium Control</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -447,377 +447,213 @@ HTML_TEMPLATE = """
         
         .header {
             text-align: center;
-            padding: 30px 0;
+            padding: 20px 0;
             background: linear-gradient(135deg, #8b0000, #4b0082);
             border-radius: 15px;
-            margin-bottom: 30px;
-            box-shadow: 0 10px 40px rgba(139, 0, 0, 0.5);
+            margin-bottom: 20px;
+            box-shadow: 0 5px 20px rgba(139, 0, 0, 0.5);
         }
         
         .header h1 {
-            font-size: 2.5em;
+            font-size: 2em;
             text-shadow: 0 0 20px rgba(255, 215, 0, 0.8);
-            margin-bottom: 10px;
+            margin-bottom: 5px;
         }
         
         .uptime {
             color: #ffd700;
-            font-size: 1.1em;
-            text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+            font-size: 0.9em;
         }
         
         .control-bar {
             display: flex;
             gap: 15px;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             flex-wrap: wrap;
+            justify-content: center;
         }
         
         .btn {
             background: linear-gradient(135deg, #333, #555);
             color: white;
             border: none;
-            padding: 12px 25px;
+            padding: 10px 20px;
             cursor: pointer;
-            border-radius: 8px;
-            font-size: 1em;
+            border-radius: 6px;
+            font-size: 0.9em;
             transition: all 0.3s;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
         }
         
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
-        }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 15px rgba(0, 0, 0, 0.4); }
+        .btn-primary { background: linear-gradient(135deg, #006400, #008000); }
         
-        .btn-primary {
-            background: linear-gradient(135deg, #006400, #008000);
+        /* --- GRID LAYOUT CHO SERVER --- */
+        .server-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); /* Tự động chia cột */
+            gap: 20px;
         }
-        
-        .btn-danger {
-            background: linear-gradient(135deg, #8b0000, #b22222);
-        }
-        
+
         .master-panel {
             background: linear-gradient(135deg, #1a1a2e, #16213e);
             border: 2px solid #ffd700;
-            padding: 25px;
+            padding: 20px;
             margin-bottom: 30px;
             border-radius: 15px;
-            box-shadow: 0 10px 40px rgba(255, 215, 0, 0.3);
         }
-        
-        .master-panel h2 {
-            color: #ffd700;
-            text-align: center;
-            margin-bottom: 20px;
-            font-size: 1.8em;
-            text-shadow: 0 0 15px rgba(255, 215, 0, 0.8);
-        }
-        
-        .master-controls {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-        }
-        
-        .control-group {
-            background: rgba(255, 255, 255, 0.05);
-            padding: 15px;
-            border-radius: 10px;
-            border: 1px solid rgba(255, 215, 0, 0.3);
-        }
-        
-        .control-group h4 {
-            color: #ffd700;
-            margin-bottom: 10px;
-            font-size: 1.1em;
-        }
-        
+        .master-controls { display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; }
+        .control-group { background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; flex: 1; min-width: 200px; text-align: center; }
+
         .panel {
             background: linear-gradient(135deg, #111, #1a1a1a);
             border: 1px solid #444;
-            padding: 25px;
-            margin-bottom: 25px;
-            border-radius: 15px;
-            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
             transition: all 0.3s;
+            display: flex;
+            flex-direction: column;
         }
         
-        .panel:hover {
-            border-color: #8b0000;
-            box-shadow: 0 10px 40px rgba(139, 0, 0, 0.4);
-        }
+        .panel:hover { border-color: #8b0000; transform: translateY(-5px); }
         
         .panel h2 {
-            border-bottom: 3px solid #8b0000;
-            padding-bottom: 15px;
+            border-bottom: 2px solid #8b0000;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
             color: #ffd700;
-            font-size: 1.6em;
-            text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+            font-size: 1.2em;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
         
-        .input-group {
-            margin-bottom: 15px;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        
-        .input-group label {
-            min-width: 100px;
-            color: #ccc;
-            font-weight: bold;
-        }
+        .input-group { margin-bottom: 10px; display: flex; gap: 5px; align-items: center; }
+        .input-group label { min-width: 40px; font-size: 0.8em; color: #aaa; }
         
         input, select {
             background: rgba(0, 0, 0, 0.6);
             border: 1px solid #555;
             color: white;
-            padding: 10px;
-            border-radius: 6px;
+            padding: 8px;
+            border-radius: 4px;
             flex: 1;
-            min-width: 100px;
-            transition: all 0.3s;
-        }
-        
-        input:focus, select:focus {
-            border-color: #ffd700;
-            outline: none;
-            box-shadow: 0 0 10px rgba(255, 215, 0, 0.3);
+            width: 100%; /* Full width trong cột */
         }
         
         .bot-card {
-            background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
-            padding: 20px;
-            margin-bottom: 15px;
-            border-radius: 12px;
-            border: 1px solid #444;
-            transition: all 0.3s;
-        }
-        
-        .bot-card:hover {
-            border-color: #ffd700;
-            transform: translateX(5px);
-        }
-        
-        .bot-card h3 {
-            color: #ffd700;
-            margin-bottom: 15px;
-            font-size: 1.3em;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .mode-selector {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-        
-        .mode-btn {
-            flex: 1;
+            background: rgba(255, 255, 255, 0.03);
             padding: 10px;
-            background: #333;
-            border: 2px solid #555;
-            color: white;
-            cursor: pointer;
+            margin-bottom: 10px;
             border-radius: 8px;
-            transition: all 0.3s;
-            text-align: center;
+            border: 1px solid #333;
         }
         
-        .mode-btn.active {
-            background: linear-gradient(135deg, #ffd700, #ffed4e);
-            color: #000;
-            border-color: #ffd700;
-            box-shadow: 0 0 20px rgba(255, 215, 0, 0.6);
-        }
+        .bot-card h3 { font-size: 1em; color: #ddd; margin-bottom: 10px; }
         
-        .range-input {
-            display: flex;
-            gap: 10px;
-            align-items: center;
+        /* Thu nhỏ nút chọn mode để vừa cột */
+        .mode-selector { display: flex; gap: 5px; margin-bottom: 10px; }
+        .mode-btn { 
+            flex: 1; padding: 5px; font-size: 0.75em; 
+            background: #222; border: 1px solid #444; border-radius: 4px; color: #ccc; cursor: pointer;
         }
+        .mode-btn.active { background: #ffd700; color: #000; border-color: #ffd700; font-weight: bold; }
         
-        .range-input input {
-            flex: 1;
-        }
+        .range-input { display: flex; gap: 5px; align-items: center; }
+        .range-input input { width: 50px; text-align: center; }
         
-        .range-input span {
-            color: #ffd700;
-            font-weight: bold;
+        .toggle-grab {
+            width: 100%; padding: 8px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; font-size: 0.9em;
+            background: #333; color: #aaa;
         }
+        .toggle-grab.active { background: linear-gradient(135deg, #006400, #008000); color: white; }
         
-        .toggle-btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            border: none;
-            cursor: pointer;
-            transition: all 0.3s;
-            font-weight: bold;
-        }
-        
-        .toggle-btn.active {
-            background: linear-gradient(135deg, #006400, #008000);
-            box-shadow: 0 0 20px rgba(0, 255, 0, 0.4);
-        }
-        
-        .delete-server {
-            background: linear-gradient(135deg, #8b0000, #b22222);
-            padding: 8px 15px;
-            border-radius: 6px;
-            border: none;
-            color: white;
-            cursor: pointer;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-        
-        .pulse {
-            animation: pulse 2s infinite;
-        }
+        .delete-server { background: #8b0000; border: none; color: white; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1><i class="fas fa-crown"></i> Shadow OCR Premium Control <i class="fas fa-crown"></i></h1>
-        <div class="uptime pulse">⏱️ Uptime: <span id="uptime">00:00:00</span></div>
+        <h1><i class="fas fa-crown"></i> Shadow OCR Premium</h1>
+        <div class="uptime">⏱️ Uptime: <span id="uptime">00:00:00</span></div>
     </div>
 
     <div class="control-bar">
-        <button id="add-server-btn" class="btn btn-primary">
-            <i class="fas fa-plus-circle"></i> Add New Server
-        </button>
-        <button id="sync-all-btn" class="btn" style="background: linear-gradient(135deg, #4b0082, #8b008b);">
-            <i class="fas fa-sync"></i> Sync All from Master
-        </button>
+        <button id="add-server-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Add Server</button>
+        <button id="sync-all-btn" class="btn" style="background: #4b0082;"><i class="fas fa-sync"></i> Sync Master</button>
+        <button id="master-grab-toggle" class="btn" style="background: #006400;"><i class="fas fa-power-off"></i> Toggle All</button>
     </div>
 
-    <!-- MASTER CONTROL PANEL -->
     <div class="master-panel">
-        <h2><i class="fas fa-cog"></i> Master Control Panel</h2>
+        <h3 style="color:#ffd700; text-align:center; margin-bottom:15px;">👑 Master Settings (Apply to All)</h3>
         <div class="master-controls">
             <div class="control-group">
-                <h4><i class="fas fa-gamepad"></i> Grab Mode</h4>
                 <select id="master-mode">
-                    <option value="1">Mode 1: Hearts Only</option>
-                    <option value="2">Mode 2: Print Only</option>
-                    <option value="3">Mode 3: Hearts + Print</option>
+                    <option value="1">❤️ Mode 1: Hearts</option>
+                    <option value="2">📷 Mode 2: Print</option>
+                    <option value="3">⭐ Mode 3: Both</option>
                 </select>
             </div>
-            
             <div class="control-group">
-                <h4><i class="fas fa-heart"></i> Hearts Range</h4>
                 <div class="range-input">
-                    <input type="number" id="master-heart-min" placeholder="Min" value="50">
-                    <span>~</span>
-                    <input type="number" id="master-heart-max" placeholder="Max" value="99999">
+                    <input type="number" id="master-print-max" placeholder="Max Print" value="1000">
                 </div>
-            </div>
-            
-            <div class="control-group">
-                <h4><i class="fas fa-print"></i> Print Range</h4>
-                <div class="range-input">
-                    <input type="number" id="master-print-min" placeholder="Min" value="1">
-                    <span>~</span>
-                    <input type="number" id="master-print-max" placeholder="Max" value="1000">
-                </div>
-            </div>
-            
-            <div class="control-group">
-                <h4><i class="fas fa-toggle-on"></i> Grab Status</h4>
-                <button id="master-grab-toggle" class="btn" style="width: 100%;">
-                    <i class="fas fa-power-off"></i> Enable All Grab
-                </button>
             </div>
         </div>
     </div>
 
-    <!-- SERVER PANELS -->
-    {% for server in servers %}
-    <div class="panel" data-server-id="{{ server.id }}">
-        <h2>
-            <span><i class="fas fa-server"></i> {{ server.name }}</span>
-            <button class="delete-server"><i class="fas fa-trash"></i> Delete</button>
-        </h2>
-        
-        <div class="input-group">
-            <label><i class="fas fa-hashtag"></i> Main Channel:</label>
-            <input type="text" class="channel-input" data-field="main_channel_id" 
-                   value="{{ server.main_channel_id or '' }}" placeholder="Main Channel ID">
-        </div>
-        
-        <div class="input-group">
-            <label><i class="fas fa-hashtag"></i> KTB Channel:</label>
-            <input type="text" class="channel-input" data-field="ktb_channel_id" 
-                   value="{{ server.ktb_channel_id or '' }}" placeholder="KTB Channel ID">
-        </div>
-        
-        {% for bot in main_bots %}
-        <div class="bot-card">
-            <h3>
-                <i class="fas fa-robot"></i> {{ bot.name }}
-                <span style="margin-left: auto; font-size: 0.8em; color: #888;">Bot {{ bot.id }}</span>
-            </h3>
+    <div class="server-grid">
+        {% for server in servers %}
+        <div class="panel" data-server-id="{{ server.id }}">
+            <h2>
+                <span><i class="fas fa-server"></i> {{ server.name }}</span>
+                <button class="delete-server"><i class="fas fa-trash"></i></button>
+            </h2>
             
-            <!-- MODE SELECTOR -->
-            <div class="mode-selector">
-                <button class="mode-btn {% if server['grab_mode_' + bot.id] == 1 or not server.get('grab_mode_' + bot.id) %}active{% endif %}" 
-                        data-mode="1" data-bot="{{ bot.id }}">
-                    <i class="fas fa-heart"></i> Mode 1: Hearts
-                </button>
-                <button class="mode-btn {% if server['grab_mode_' + bot.id] == 2 %}active{% endif %}" 
-                        data-mode="2" data-bot="{{ bot.id }}">
-                    <i class="fas fa-print"></i> Mode 2: Print
-                </button>
-                <button class="mode-btn {% if server['grab_mode_' + bot.id] == 3 %}active{% endif %}" 
-                        data-mode="3" data-bot="{{ bot.id }}">
-                    <i class="fas fa-star"></i> Mode 3: Both
-                </button>
-            </div>
-            
-            <!-- HEARTS RANGE -->
             <div class="input-group">
-                <label><i class="fas fa-heart"></i> Hearts:</label>
-                <div class="range-input">
-                    <input type="number" class="heart-min" value="{{ server['heart_min_' + bot.id] or 50 }}" placeholder="Min">
-                    <span>~</span>
-                    <input type="number" class="heart-max" value="{{ server['heart_max_' + bot.id] or 99999 }}" placeholder="Max">
-                </div>
+                <input type="text" class="channel-input" data-field="main_channel_id" value="{{ server.main_channel_id or '' }}" placeholder="Main Channel ID">
             </div>
             
-            <!-- PRINT RANGE -->
             <div class="input-group">
-                <label><i class="fas fa-print"></i> Print:</label>
-                <div class="range-input">
-                    <input type="number" class="print-min" value="{{ server['print_min_' + bot.id] or 1 }}" placeholder="Min">
-                    <span>~</span>
-                    <input type="number" class="print-max" value="{{ server['print_max_' + bot.id] or 1000 }}" placeholder="Max">
-                </div>
+                <input type="text" class="channel-input" data-field="ktb_channel_id" value="{{ server.ktb_channel_id or '' }}" placeholder="KTB Channel ID">
             </div>
             
-            <!-- GRAB TOGGLE -->
-            <button class="btn toggle-grab {% if server['auto_grab_enabled_' + bot.id] %}active{% endif %}" 
-                    data-bot="{{ bot.id }}" style="width: 100%;">
-                <i class="fas fa-power-off"></i> 
-                {{ 'DISABLE GRAB' if server['auto_grab_enabled_' + bot.id] else 'ENABLE GRAB' }}
-            </button>
+            {% for bot in main_bots %}
+            <div class="bot-card">
+                <h3><i class="fas fa-robot"></i> {{ bot.name }}</h3>
+                
+                <div class="mode-selector">
+                    <button class="mode-btn {% if server['grab_mode_' + bot.id] == 1 or not server.get('grab_mode_' + bot.id) %}active{% endif %}" data-mode="1" data-bot="{{ bot.id }}">❤️</button>
+                    <button class="mode-btn {% if server['grab_mode_' + bot.id] == 2 %}active{% endif %}" data-mode="2" data-bot="{{ bot.id }}">📷</button>
+                    <button class="mode-btn {% if server['grab_mode_' + bot.id] == 3 %}active{% endif %}" data-mode="3" data-bot="{{ bot.id }}">⭐</button>
+                </div>
+                
+                <div class="input-group">
+                    <label>❤️</label>
+                    <div class="range-input" style="flex:1">
+                        <input type="number" class="heart-min" value="{{ server['heart_min_' + bot.id] or 50 }}" placeholder="Min">
+                        <input type="number" class="heart-max" value="{{ server['heart_max_' + bot.id] or 99999 }}" placeholder="Max">
+                    </div>
+                </div>
+                
+                <div class="input-group">
+                    <label>📷</label>
+                    <div class="range-input" style="flex:1">
+                        <input type="number" class="print-min" value="{{ server['print_min_' + bot.id] or 1 }}" placeholder="Min">
+                        <input type="number" class="print-max" value="{{ server['print_max_' + bot.id] or 1000 }}" placeholder="Max">
+                    </div>
+                </div>
+                
+                <button class="toggle-grab {% if server['auto_grab_enabled_' + bot.id] %}active{% endif %}" data-bot="{{ bot.id }}">
+                    {{ 'ON' if server['auto_grab_enabled_' + bot.id] else 'OFF' }}
+                </button>
+            </div>
+            {% endfor %}
         </div>
         {% endfor %}
     </div>
-    {% endfor %}
     
     <script>
-        // Uptime counter
         const startTime = {{ start_time }};
         setInterval(() => {
             const elapsed = Math.floor(Date.now() / 1000 - startTime);
@@ -828,112 +664,68 @@ HTML_TEMPLATE = """
         }, 1000);
 
         async function post(url, data) {
-            await fetch(url, { 
-                method: 'POST', 
-                headers: {'Content-Type': 'application/json'}, 
-                body: JSON.stringify(data) 
-            });
+            await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
             location.reload();
         }
         
-        // Add server
         document.getElementById('add-server-btn').addEventListener('click', () => {
             const name = prompt("Server Name:");
             if(name) post('/api/add_server', {name: name});
         });
         
-        // Delete server
         document.querySelectorAll('.delete-server').forEach(btn => {
             btn.addEventListener('click', () => {
-                if(confirm('Delete this server?')) {
-                    post('/api/delete_server', {
-                        server_id: btn.closest('.panel').dataset.serverId
-                    });
-                }
+                if(confirm('Delete?')) post('/api/delete_server', { server_id: btn.closest('.panel').dataset.serverId });
             });
         });
         
-        // Update channels
         document.querySelectorAll('.channel-input').forEach(inp => {
             inp.addEventListener('change', () => {
                 const sid = inp.closest('.panel').dataset.serverId;
                 const field = inp.dataset.field;
-                fetch('/api/update_server_field', { 
-                    method: 'POST', 
-                    headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify({server_id: sid, [field]: inp.value}) 
-                });
+                fetch('/api/update_server_field', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({server_id: sid, [field]: inp.value}) });
             });
         });
         
-        // Mode selector
         document.querySelectorAll('.mode-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const card = btn.closest('.bot-card');
                 const botId = btn.dataset.bot;
                 const mode = btn.dataset.mode;
                 const serverId = btn.closest('.panel').dataset.serverId;
-                
-                // Remove active from siblings
-                card.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                
-                // Save mode
-                fetch('/api/update_bot_mode', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        server_id: serverId,
-                        bot_id: botId,
-                        mode: mode
-                    })
-                });
+                post('/api/update_bot_mode', { server_id: serverId, bot_id: botId, mode: mode });
             });
         });
         
-        // Toggle grab
         document.querySelectorAll('.toggle-grab').forEach(btn => {
             btn.addEventListener('click', () => {
                 const card = btn.closest('.bot-card');
                 const serverId = btn.closest('.panel').dataset.serverId;
                 const botId = btn.dataset.bot;
-                
                 const heartMin = card.querySelector('.heart-min').value;
                 const heartMax = card.querySelector('.heart-max').value;
                 const printMin = card.querySelector('.print-min').value;
                 const printMax = card.querySelector('.print-max').value;
                 
                 post('/api/harvest_toggle', {
-                    server_id: serverId,
-                    node: botId,
-                    heart_min: heartMin,
-                    heart_max: heartMax,
-                    print_min: printMin,
-                    print_max: printMax
+                    server_id: serverId, node: botId,
+                    heart_min: heartMin, heart_max: heartMax,
+                    print_min: printMin, print_max: printMax
                 });
             });
         });
         
-        // Sync all from master
         document.getElementById('sync-all-btn').addEventListener('click', () => {
-            if(confirm('Sync all bots with Master Panel settings?')) {
+            if(confirm('Sync settings to ALL bots?')) {
                 const mode = document.getElementById('master-mode').value;
-                const heartMin = document.getElementById('master-heart-min').value;
-                const heartMax = document.getElementById('master-heart-max').value;
-                const printMin = document.getElementById('master-print-min').value;
                 const printMax = document.getElementById('master-print-max').value;
-                
-                post('/api/sync_all', {
-                    mode, heartMin, heartMax, printMin, printMax
-                });
+                // Default values for others
+                post('/api/sync_all', { mode: mode, heartMin: 50, heartMax: 99999, printMin: 1, printMax: printMax });
             }
         });
         
-        // Master grab toggle
         document.getElementById('master-grab-toggle').addEventListener('click', () => {
-            if(confirm('Toggle grab for ALL bots?')) {
-                post('/api/toggle_all_grab', {});
-            }
+            if(confirm('Toggle ALL bots?')) post('/api/toggle_all_grab', {});
         });
     </script>
 </body>
