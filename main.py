@@ -7,6 +7,8 @@ from PIL import Image, ImageOps, ImageEnhance
 import io
 
 # --- CẤU HÌNH OCR ---
+# Lưu ý: Nếu chạy trên Windows, bạn có thể cần sửa đường dẫn này thành đường dẫn cài Tesseract trên máy bạn
+# Ví dụ: r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
 
 load_dotenv()
@@ -611,7 +613,8 @@ HTML_TEMPLATE = """
                 <button class="toggle-grab {% if server['auto_grab_enabled_' + bot.id] %}active{% endif %}" data-bot="{{ bot.id }}">
                     {{ 'RUNNING' if server['auto_grab_enabled_' + bot.id] else 'STOPPED' }}
                 </button>
-            </div> {% endfor %}
+            </div> 
+            {% endfor %}
         </div>
         {% endfor %}
     </div>
@@ -682,7 +685,7 @@ HTML_TEMPLATE = """
                 post('/api/harvest_toggle', {
                     server_id: serverId, node: botId,
                     heart_min: heartMin, heart_max: heartMax,
-                    print_min: printMin, print_max: printMax
+                    print_min: printMin, print_max: printMax,
                     m3_heart_min: m3_h_min, m3_heart_max: m3_h_max,
                     m3_print_min: m3_p_min, m3_print_max: m3_p_max
                 });
