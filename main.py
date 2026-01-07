@@ -468,197 +468,171 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
             if not loop.is_closed(): loop.close()
         except: pass
 
-# --- WEB SERVER (UI) ---
-app = Flask(__name__)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shadow OCR Premium - Multi Mode</title>
+    <title>Shadow OCR Master Control</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0f0f13; color: #f0f0f0; font-family: sans-serif; padding: 20px; }
         
-        body {
-            background: linear-gradient(135deg, #0a0a0a 0%, #1a0a1a 50%, #0a0a1a 100%);
-            color: #f0f0f0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        /* HEADER & MASTER PANEL */
+        .header { text-align: center; margin-bottom: 20px; }
+        .header h1 { color: #ffd700; text-shadow: 0 0 10px rgba(255, 215, 0, 0.5); }
+        
+        .master-panel {
+            background: linear-gradient(135deg, #2c003e, #000000);
+            border: 2px solid #ffd700;
+            border-radius: 12px;
             padding: 20px;
-            min-height: 100vh;
+            margin-bottom: 30px;
+            box-shadow: 0 0 20px rgba(255, 215, 0, 0.2);
+        }
+        .master-title {
+            text-align: center; color: #ffd700; font-weight: bold; margin-bottom: 15px; text-transform: uppercase;
+            border-bottom: 1px solid #444; padding-bottom: 10px; font-size: 1.2em;
         }
         
-        .header {
-            text-align: center;
-            padding: 20px 0;
-            background: linear-gradient(135deg, #8b0000, #4b0082);
-            border-radius: 15px;
-            margin-bottom: 20px;
-            box-shadow: 0 5px 20px rgba(139, 0, 0, 0.5);
+        .master-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px;
         }
         
-        .header h1 {
-            font-size: 2em;
-            text-shadow: 0 0 20px rgba(255, 215, 0, 0.8);
-            margin-bottom: 5px;
+        .master-bot-card {
+            background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; border: 1px solid #555;
         }
+        .master-bot-name { color: #00ff00; font-weight: bold; margin-bottom: 5px; text-align: center; display: block; }
         
-        .uptime { color: #ffd700; font-size: 0.9em; }
+        /* SHARED STYLES */
+        .btn { padding: 8px 15px; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold; }
+        .btn-sync { background: #ffd700; color: #000; width: 100%; margin-top: 15px; font-size: 1.1em; transition: 0.3s; }
+        .btn-sync:hover { background: #ffea00; box-shadow: 0 0 15px #ffd700; }
         
-        .control-bar {
-            display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; justify-content: center;
-        }
-        
-        .btn {
-            background: linear-gradient(135deg, #333, #555); color: white; border: none; padding: 10px 20px;
-            cursor: pointer; border-radius: 6px; font-size: 0.9em; transition: all 0.3s;
-            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
-        }
-        
-        .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 15px rgba(0, 0, 0, 0.4); }
-        .btn-primary { background: linear-gradient(135deg, #006400, #008000); }
-        
-        .server-grid {
-            display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px;
-        }
+        .btn-add { background: #006400; margin-bottom: 20px; }
+        .btn-del { background: #8b0000; float: right; font-size: 0.8em; padding: 2px 8px; }
 
-        .panel {
-            background: linear-gradient(135deg, #111, #1a1a1a); border: 1px solid #444; padding: 15px;
-            border-radius: 12px; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5); transition: all 0.3s;
-            display: flex; flex-direction: column;
-        }
+        .server-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+        .panel { background: #1a1a1a; border: 1px solid #333; padding: 15px; border-radius: 8px; }
+        .panel h2 { color: #aaa; font-size: 1.1em; margin-bottom: 10px; border-bottom: 1px solid #333; padding-bottom: 5px; }
+
+        input { background: #333; border: 1px solid #555; color: white; padding: 5px; width: 100%; border-radius: 4px; }
+        .input-group { margin-bottom: 8px; }
         
-        .panel:hover { border-color: #8b0000; transform: translateY(-5px); }
+        .bot-card { background: #222; padding: 10px; margin-top: 10px; border-radius: 6px; border: 1px solid #444; }
         
-        .panel h2 {
-            border-bottom: 2px solid #8b0000; padding-bottom: 10px; margin-bottom: 15px; color: #ffd700;
-            font-size: 1.2em; display: flex; justify-content: space-between; align-items: center;
-        }
+        /* MODE BUTTONS */
+        .mode-selector { display: flex; gap: 5px; margin-bottom: 5px; }
+        .mode-btn { flex: 1; padding: 5px; background: #333; border: 1px solid #555; color: #888; cursor: pointer; font-size: 0.8em; }
         
-        .input-group { margin-bottom: 10px; display: flex; gap: 5px; align-items: center; }
-        .input-group label { min-width: 40px; font-size: 0.8em; color: #aaa; }
+        .mode-btn.active-1 { background: #ff4444; color: white; border-color: red; }
+        .mode-btn.active-2 { background: #4444ff; color: white; border-color: blue; }
+        .mode-btn.active-3 { background: #ffd700; color: black; border-color: gold; font-weight: bold; }
+
+        .range-row { display: flex; gap: 5px; align-items: center; margin-bottom: 5px; }
+        .range-row label { width: 20px; font-size: 0.9em; }
         
-        input {
-            background: rgba(0, 0, 0, 0.6); border: 1px solid #555; color: white; padding: 8px;
-            border-radius: 4px; flex: 1; width: 100%;
-        }
-        
-        .bot-card {
-            background: rgba(255, 255, 255, 0.03); padding: 10px; margin-bottom: 10px;
-            border-radius: 8px; border: 1px solid #333;
-        }
-        
-        .bot-card h3 { font-size: 1em; color: #ddd; margin-bottom: 10px; }
-        
-        /* New Toggle Button Style */
-        .mode-selector { display: flex; gap: 5px; margin-bottom: 10px; }
-        .mode-btn { 
-            flex: 1; padding: 5px; font-size: 0.85em; 
-            background: #222; border: 1px solid #444; border-radius: 4px; color: #666; cursor: pointer;
-            transition: all 0.2s;
-        }
-        .mode-btn:hover { background: #333; }
-        
-        /* Active states for each mode */
-        .mode-btn.active-1 { background: #ff4444; color: white; border-color: #ff0000; } /* Hearts */
-        .mode-btn.active-2 { background: #4444ff; color: white; border-color: #0000ff; } /* Print */
-        .mode-btn.active-3 { background: #ffd700; color: black; border-color: #ffd700; font-weight: bold; } /* Both */
-        
-        .range-input { display: flex; gap: 5px; align-items: center; }
-        .range-input input { width: 50px; text-align: center; }
-        
-        .toggle-grab {
-            width: 100%; padding: 8px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; font-size: 0.9em;
-            background: #333; color: #aaa;
-        }
-        .toggle-grab.active { background: linear-gradient(135deg, #006400, #008000); color: white; }
-        
-        .delete-server { background: #8b0000; border: none; color: white; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+        .m3-config { background: rgba(255,215,0,0.05); padding: 5px; border: 1px solid #555; margin-top: 5px; border-radius: 4px; }
+        .m3-label { font-size: 0.7em; color: #ffd700; text-align: center; }
+
+        .toggle-grab { width: 100%; padding: 6px; margin-top: 5px; background: #333; color: #666; border: none; cursor: pointer; }
+        .toggle-grab.active { background: #006400; color: white; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1><i class="fas fa-crown"></i> Shadow OCR Multi-Mode</h1>
-        <div class="uptime">⏱️ Uptime: <span id="uptime">00:00:00</span></div>
+        <h1>👑 SHADOW MASTER CONTROL</h1>
+        <div style="color: #888; font-size: 0.9em;">Uptime: <span id="uptime">Loading...</span></div>
     </div>
 
-    <div class="control-bar">
-        <button id="add-server-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Add Server</button>
-        <button id="master-grab-toggle" class="btn" style="background: #006400;"><i class="fas fa-power-off"></i> Toggle All</button>
+    <div class="master-panel">
+        <div class="master-title"><i class="fas fa-sliders-h"></i> BẢNG ĐIỀU KHIỂN TỔNG (MASTER)</div>
+        <div class="master-grid">
+            {% for bot in main_bots %}
+            <div class="master-bot-card" id="master-bot-{{ bot.id }}">
+                <span class="master-bot-name">{{ bot.name }}</span>
+                
+                <div class="mode-selector">
+                    <button class="mode-btn" onclick="toggleMasterMode(this, '1')">❤️ Tim</button>
+                    <button class="mode-btn" onclick="toggleMasterMode(this, '2')">📷 Print</button>
+                    <button class="mode-btn" onclick="toggleMasterMode(this, '3')">⭐ Both</button>
+                </div>
+                <input type="hidden" class="master-mode-1" value="false">
+                <input type="hidden" class="master-mode-2" value="false">
+                <input type="hidden" class="master-mode-3" value="false">
+
+                <div class="range-row">
+                    <label>❤️</label>
+                    <input type="number" class="master-h-min" value="50" placeholder="Min">
+                    <input type="number" class="master-h-max" value="99999" placeholder="Max">
+                </div>
+                <div class="range-row">
+                    <label>📷</label>
+                    <input type="number" class="master-p-min" value="1" placeholder="Min">
+                    <input type="number" class="master-p-max" value="1000" placeholder="Max">
+                </div>
+
+                <div class="m3-config">
+                    <div class="m3-label">MODE 3 CONFIG</div>
+                    <div class="range-row">
+                        <input type="number" class="master-m3-h-min" value="50" placeholder="❤️ Min">
+                        <input type="number" class="master-m3-h-max" value="99999" placeholder="Max">
+                    </div>
+                    <div class="range-row">
+                        <input type="number" class="master-m3-p-min" value="1" placeholder="📷 Min">
+                        <input type="number" class="master-m3-p-max" value="1000" placeholder="Max">
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        <button class="btn btn-sync" onclick="syncAll()"><i class="fas fa-sync-alt"></i> ĐỒNG BỘ CẤU HÌNH XUỐNG TẤT CẢ SERVER</button>
+    </div>
+
+    <div style="text-align:center; margin-bottom: 20px;">
+        <button id="add-server-btn" class="btn btn-add"><i class="fas fa-plus"></i> Add New Server</button>
+        <button id="master-grab-toggle" class="btn" style="background: #006400;"><i class="fas fa-power-off"></i> Toggle All RUNNING</button>
     </div>
 
     <div class="server-grid">
         {% for server in servers %}
         <div class="panel" data-server-id="{{ server.id }}">
             <h2>
-                <span><i class="fas fa-server"></i> {{ server.name }}</span>
-                <button class="delete-server"><i class="fas fa-trash"></i></button>
+                <i class="fas fa-server"></i> {{ server.name }}
+                <button class="btn btn-del delete-server"><i class="fas fa-trash"></i></button>
             </h2>
-            
-            <div class="input-group">
-                <input type="text" class="channel-input" data-field="main_channel_id" value="{{ server.main_channel_id or '' }}" placeholder="Main Channel ID">
-            </div>
-            
-            <div class="input-group">
-                <input type="text" class="channel-input" data-field="ktb_channel_id" value="{{ server.ktb_channel_id or '' }}" placeholder="KTB Channel ID">
-            </div>
+            <div class="input-group"><input type="text" class="channel-input" data-field="main_channel_id" value="{{ server.main_channel_id or '' }}" placeholder="Main Channel ID"></div>
+            <div class="input-group"><input type="text" class="channel-input" data-field="ktb_channel_id" value="{{ server.ktb_channel_id or '' }}" placeholder="KTB Channel ID"></div>
             
             {% for bot in main_bots %}
             <div class="bot-card">
-                <h3><i class="fas fa-robot"></i> {{ bot.name }}</h3>
+                <div style="font-weight:bold; color:#ddd; font-size:0.9em; margin-bottom:5px;">{{ bot.name }}</div>
                 
                 <div class="mode-selector">
-                    <button class="mode-btn {{ 'active-1' if server['mode_1_active_' + bot.id] else '' }}" 
-                            onclick="toggleMode(this, '1', '{{ bot.id }}', '{{ server.id }}')">
-                        ❤️ Hearts
-                    </button>
-                    <button class="mode-btn {{ 'active-2' if server['mode_2_active_' + bot.id] else '' }}" 
-                            onclick="toggleMode(this, '2', '{{ bot.id }}', '{{ server.id }}')">
-                        📷 Print
-                    </button>
-                    <button class="mode-btn {{ 'active-3' if server['mode_3_active_' + bot.id] else '' }}" 
-                            onclick="toggleMode(this, '3', '{{ bot.id }}', '{{ server.id }}')">
-                        ⭐ Both
-                    </button>
+                    <button class="mode-btn {{ 'active-1' if server['mode_1_active_' + bot.id] else '' }}" onclick="toggleMode(this, '1', '{{ bot.id }}', '{{ server.id }}')">❤️</button>
+                    <button class="mode-btn {{ 'active-2' if server['mode_2_active_' + bot.id] else '' }}" onclick="toggleMode(this, '2', '{{ bot.id }}', '{{ server.id }}')">📷</button>
+                    <button class="mode-btn {{ 'active-3' if server['mode_3_active_' + bot.id] else '' }}" onclick="toggleMode(this, '3', '{{ bot.id }}', '{{ server.id }}')">⭐</button>
                 </div>
                 
-                <div class="input-group">
-                    <label>❤️</label>
-                    <div class="range-input" style="flex:1">
-                        <input type="number" class="heart-min" value="{{ server['heart_min_' + bot.id] or 50 }}" placeholder="Min">
-                        <input type="number" class="heart-max" value="{{ server['heart_max_' + bot.id] or 99999 }}" placeholder="Max">
-                    </div>
-                </div>
-                
-                <div class="input-group">
-                    <label>📷</label>
-                    <div class="range-input" style="flex:1">
-                        <input type="number" class="print-min" value="{{ server['print_min_' + bot.id] or 1 }}" placeholder="Min">
-                        <input type="number" class="print-max" value="{{ server['print_max_' + bot.id] or 1000 }}" placeholder="Max">
-                    </div>
+                <div class="range-row"><label>❤️</label> <input type="number" class="heart-min" value="{{ server['heart_min_' + bot.id] or 50 }}"> <input type="number" class="heart-max" value="{{ server['heart_max_' + bot.id] or 99999 }}"></div>
+                <div class="range-row"><label>📷</label> <input type="number" class="print-min" value="{{ server['print_min_' + bot.id] or 1 }}"> <input type="number" class="print-max" value="{{ server['print_max_' + bot.id] or 1000 }}"></div>
+
+                <div class="m3-config">
+                    <div class="range-row"><input type="number" class="m3-h-min" value="{{ server['m3_heart_min_' + bot.id] or 50 }}"> <input type="number" class="m3-h-max" value="{{ server['m3_heart_max_' + bot.id] or 99999 }}"></div>
+                    <div class="range-row"><input type="number" class="m3-p-min" value="{{ server['m3_print_min_' + bot.id] or 1 }}"> <input type="number" class="m3-p-max" value="{{ server['m3_print_max_' + bot.id] or 1000 }}"></div>
                 </div>
 
-                <div style="background: rgba(255, 215, 0, 0.1); padding: 5px; margin: 10px 0; border-radius: 4px; border: 1px solid #ffd700;">
-                    <div style="font-size:0.8em; color:#ffd700; text-align:center; margin-bottom: 3px; font-weight:bold;">⭐ Mode 3 (Both) Config</div>
-                    <div style="display:flex; gap:2px; margin-bottom: 2px;">
-                        <input type="number" class="m3-h-min" value="{{ server['m3_heart_min_' + bot.id] or 50 }}" placeholder="❤️ Min" style="border-color: #ffd700;">
-                        <input type="number" class="m3-h-max" value="{{ server['m3_heart_max_' + bot.id] or 99999 }}" placeholder="❤️ Max" style="border-color: #ffd700;">
-                    </div>
-                    <div style="display:flex; gap:2px;">
-                        <input type="number" class="m3-p-min" value="{{ server['m3_print_min_' + bot.id] or 1 }}" placeholder="📷 Min" style="border-color: #ffd700;">
-                        <input type="number" class="m3-p-max" value="{{ server['m3_print_max_' + bot.id] or 1000 }}" placeholder="📷 Max" style="border-color: #ffd700;">
-                    </div>
-                </div>
                 <button class="toggle-grab {% if server['auto_grab_enabled_' + bot.id] %}active{% endif %}" data-bot="{{ bot.id }}">
                     {{ 'RUNNING' if server['auto_grab_enabled_' + bot.id] else 'STOPPED' }}
                 </button>
-            </div> 
+            </div>
             {% endfor %}
         </div>
         {% endfor %}
     </div>
-    
+
     <script>
         const startTime = {{ start_time }};
         setInterval(() => {
@@ -671,34 +645,64 @@ HTML_TEMPLATE = """
 
         async function post(url, data) {
             await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
-            // Reload nhẹ nhàng không cần refresh cả trang nếu muốn (nhưng ở đây reload cho chắc)
             location.reload();
         }
 
+        // Logic cho Master Panel
+        function toggleMasterMode(btn, mode) {
+            btn.classList.toggle('active-' + mode);
+            const parent = btn.closest('.master-bot-card');
+            const input = parent.querySelector('.master-mode-' + mode);
+            input.value = btn.classList.contains('active-' + mode) ? "true" : "false";
+        }
+
+        function syncAll() {
+            if(!confirm('Bạn có chắc muốn áp dụng cấu hình này cho TẤT CẢ SERVER không?')) return;
+            
+            const botsConfig = [];
+            document.querySelectorAll('.master-bot-card').forEach(card => {
+                const botId = card.id.replace('master-bot-', '');
+                botsConfig.push({
+                    id: botId,
+                    mode1: card.querySelector('.master-mode-1').value === "true",
+                    mode2: card.querySelector('.master-mode-2').value === "true",
+                    mode3: card.querySelector('.master-mode-3').value === "true",
+                    h_min: card.querySelector('.master-h-min').value,
+                    h_max: card.querySelector('.master-h-max').value,
+                    p_min: card.querySelector('.master-p-min').value,
+                    p_max: card.querySelector('.master-p-max').value,
+                    m3_h_min: card.querySelector('.master-m3-h-min').value,
+                    m3_h_max: card.querySelector('.master-m3-h-max').value,
+                    m3_p_min: card.querySelector('.master-m3-p-min').value,
+                    m3_p_max: card.querySelector('.master-m3-p-max').value
+                });
+            });
+
+            post('/api/sync_master_config', { bots: botsConfig });
+        }
+
+        // Logic cũ
         function toggleMode(btn, mode, botId, serverId) {
-            // Hiệu ứng UI ngay lập tức
             const activeClass = 'active-' + mode;
             const isActive = btn.classList.toggle(activeClass);
-            
-            // Gửi API
             fetch('/api/toggle_bot_mode', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ server_id: serverId, bot_id: botId, mode: mode, active: isActive })
             });
         }
-        
+
         document.getElementById('add-server-btn').addEventListener('click', () => {
             const name = prompt("Server Name:");
             if(name) post('/api/add_server', {name: name});
         });
-        
+
         document.querySelectorAll('.delete-server').forEach(btn => {
             btn.addEventListener('click', () => {
                 if(confirm('Delete?')) post('/api/delete_server', { server_id: btn.closest('.panel').dataset.serverId });
             });
         });
-        
+
         document.querySelectorAll('.channel-input').forEach(inp => {
             inp.addEventListener('change', () => {
                 const sid = inp.closest('.panel').dataset.serverId;
@@ -706,13 +710,13 @@ HTML_TEMPLATE = """
                 fetch('/api/update_server_field', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({server_id: sid, [field]: inp.value}) });
             });
         });
-        
+
         document.querySelectorAll('.toggle-grab').forEach(btn => {
             btn.addEventListener('click', () => {
                 const card = btn.closest('.bot-card');
                 const serverId = btn.closest('.panel').dataset.serverId;
                 const botId = btn.dataset.bot;
-                
+                // Lấy data hiện tại để gửi (dù logic server lưu độc lập nhưng cứ gửi cho đủ)
                 const heartMin = card.querySelector('.heart-min').value;
                 const heartMax = card.querySelector('.heart-max').value;
                 const printMin = card.querySelector('.print-min').value;
@@ -731,9 +735,9 @@ HTML_TEMPLATE = """
                 });
             });
         });
-        
+
         document.getElementById('master-grab-toggle').addEventListener('click', () => {
-            if(confirm('Toggle ALL bots?')) post('/api/toggle_all_grab', {});
+            if(confirm('Toggle ALL bots RUNNING?')) post('/api/toggle_all_grab', {});
         });
     </script>
 </body>
@@ -841,7 +845,37 @@ def api_toggle_all_grab():
     
     save_settings()
     return jsonify({'status': 'success'})
-
+@app.route("/api/sync_master_config", methods=['POST'])
+def api_sync_master_config():
+    data = request.json
+    bots_config = data.get('bots', [])
+    
+    # Duyệt qua từng server
+    for server in servers:
+        # Duyệt qua từng cấu hình bot từ Master Panel
+        for config in bots_config:
+            bot_id = config['id']
+            
+            # Đồng bộ Mode (True/False)
+            server[f'mode_1_active_{bot_id}'] = config['mode1']
+            server[f'mode_2_active_{bot_id}'] = config['mode2']
+            server[f'mode_3_active_{bot_id}'] = config['mode3']
+            
+            # Đồng bộ Tim/Print cơ bản
+            server[f'heart_min_{bot_id}'] = int(config['h_min'])
+            server[f'heart_max_{bot_id}'] = int(config['h_max'])
+            server[f'print_min_{bot_id}'] = int(config['p_min'])
+            server[f'print_max_{bot_id}'] = int(config['p_max'])
+            
+            # Đồng bộ cấu hình Mode 3 riêng
+            server[f'm3_heart_min_{bot_id}'] = int(config['m3_h_min'])
+            server[f'm3_heart_max_{bot_id}'] = int(config['m3_h_max'])
+            server[f'm3_print_min_{bot_id}'] = int(config['m3_p_min'])
+            server[f'm3_print_max_{bot_id}'] = int(config['m3_p_max'])
+            
+    save_settings()
+    return jsonify({'status': 'success'})
+    
 if __name__ == "__main__":
     print("🚀 Shadow Grabber - Multi Mode Edition Starting...", flush=True)
     load_settings()
