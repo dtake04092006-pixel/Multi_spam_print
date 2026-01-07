@@ -320,21 +320,28 @@ async def handle_grab(bot, msg, bot_num):
     # Priority: 3 (Mode 3 - Cao nhất) > 2 (Mode 2) > 1 (Mode 1)
 
     # --- KIỂM TRA MODE 3: CẢ TIM VÀ PRINT (Ưu tiên cao nhất) ---
+    # --- KIỂM TRA MODE 3: CẢ TIM VÀ PRINT (Ưu tiên cao nhất) ---
     if mode3_active and heart_data and ocr_data:
+        # ĐỌC CẤU HÌNH RIÊNG CHO MODE 3 TẠI ĐÂY
+        m3_h_min = target_server.get(f'm3_heart_min_{bot_num}', 50)
+        m3_h_max = target_server.get(f'm3_heart_max_{bot_num}', 99999)
+        m3_p_min = target_server.get(f'm3_print_min_{bot_num}', 1)
+        m3_p_max = target_server.get(f'm3_print_max_{bot_num}', 1000)
+
         valid_cards = []
         print_dict = {idx: val for idx, val in ocr_data}
         for idx, hearts in enumerate(heart_data):
             if idx in print_dict:
                 print_val = print_dict[idx]
-                if (heart_min <= hearts <= heart_max) and (print_min <= print_val <= print_max):
+                # SO SÁNH VỚI BIẾN m3_ VỪA LẤY
+                if (m3_h_min <= hearts <= m3_h_max) and (m3_p_min <= print_val <= m3_p_max):
                     valid_cards.append((idx, hearts, print_val))
         
         if valid_cards:
-            best = min(valid_cards, key=lambda x: (x[2], -x[1])) # Print thấp nhất -> Tim cao nhất
+            best = min(valid_cards, key=lambda x: (x[2], -x[1])) 
             best_idx, best_hearts, best_print = best
             emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][best_idx]
-            candidates.append((3, emoji, 0.5, f"Mode 3 [Both] - Hearts {best_hearts} + Print #{best_print}"))
-
+            candidates.append((3, emoji, 0.5, f"Mode 3 [Both] - H:{best_hearts} P:#{best_print}"))
     # --- KIỂM TRA MODE 2: CHỈ PRINT ---
     if mode2_active and ocr_data:
         valid_prints = [(idx, val) for idx, val in ocr_data if print_min <= val <= print_max]
@@ -589,10 +596,22 @@ HTML_TEMPLATE = """
                         <input type="number" class="print-max" value="{{ server['print_max_' + bot.id] or 1000 }}" placeholder="Max">
                     </div>
                 </div>
-                
+
+                <div style="background: rgba(255, 215, 0, 0.1); padding: 5px; margin: 10px 0; border-radius: 4px; border: 1px solid #ffd700;">
+                    <div style="font-size:0.8em; color:#ffd700; text-align:center; margin-bottom: 3px; font-weight:bold;">⭐ Mode 3 (Both) Config</div>
+                    <div style="display:flex; gap:2px; margin-bottom: 2px;">
+                        <input type="number" class="m3-h-min" value="{{ server['m3_heart_min_' + bot.id] or 50 }}" placeholder="❤️ Min" style="border-color: #ffd700;">
+                        <input type="number" class="m3-h-max" value="{{ server['m3_heart_max_' + bot.id] or 99999 }}" placeholder="❤️ Max" style="border-color: #ffd700;">
+                    </div>
+                    <div style="display:flex; gap:2px;">
+                        <input type="number" class="m3-p-min" value="{{ server['m3_print_min_' + bot.id] or 1 }}" placeholder="📷 Min" style="border-color: #ffd700;">
+                        <input type="number" class="m3-p-max" value="{{ server['m3_print_max_' + bot.id] or 1000 }}" placeholder="📷 Max" style="border-color: #ffd700;">
+                    </div>
+                </div>
                 <button class="toggle-grab {% if server['auto_grab_enabled_' + bot.id] %}active{% endif %}" data-bot="{{ bot.id }}">
                     {{ 'RUNNING' if server['auto_grab_enabled_' + bot.id] else 'STOPPED' }}
                 </button>
+            </div>
             </div>
             {% endfor %}
         </div>
@@ -657,11 +676,17 @@ HTML_TEMPLATE = """
                 const heartMax = card.querySelector('.heart-max').value;
                 const printMin = card.querySelector('.print-min').value;
                 const printMax = card.querySelector('.print-max').value;
+                const m3_h_min = card.querySelector('.m3-h-min').value;
+                const m3_h_max = card.querySelector('.m3-h-max').value;
+                const m3_p_min = card.querySelector('.m3-p-min').value;
+                const m3_p_max = card.querySelector('.m3-p-max').value;
                 
                 post('/api/harvest_toggle', {
                     server_id: serverId, node: botId,
                     heart_min: heartMin, heart_max: heartMax,
                     print_min: printMin, print_max: printMax
+                    m3_heart_min: m3_h_min, m3_heart_max: m3_h_max,
+                    m3_print_min: m3_p_min, m3_print_max: m3_p_max
                 });
             });
         });
@@ -749,6 +774,10 @@ def api_harvest_toggle():
     server[f'heart_max_{node}'] = int(data.get('heart_max', 99999))
     server[f'print_min_{node}'] = int(data.get('print_min', 1))
     server[f'print_max_{node}'] = int(data.get('print_max', 1000))
+    server[f'm3_heart_min_{node}'] = int(data.get('m3_heart_min', 50))
+    server[f'm3_heart_max_{node}'] = int(data.get('m3_heart_max', 99999))
+    server[f'm3_print_min_{node}'] = int(data.get('m3_print_min', 1))
+    server[f'm3_print_max_{node}'] = int(data.get('m3_print_max', 1000))
     
     save_settings()
     return jsonify({'status': 'success'})
