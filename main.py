@@ -164,7 +164,7 @@ def health_monitoring_check():
         check_bot_health(bot_data, bot_id)
 
 # ==============================================================================
-# <<< XỬ LÝ ẢNH (OCR) - PHIÊN BẢN PIL >>>
+# <<< XỬ LÝ ẢNH (OCR) - FIX TÁCH PRINT & EDITION (THEO Ý BẠN) >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
     print(f"[OCR LOG] 📥 Đang tải ảnh từ URL...", flush=True)
@@ -181,35 +181,55 @@ def scan_image_for_prints(image_url):
         card_width = width // num_cards
         results = []
 
-        print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột (PIL Mode).", flush=True)
+        print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột.", flush=True)
 
         for i in range(num_cards):
             left = i * card_width
             right = (i + 1) * card_width
             
+            # Cắt phần dưới cùng chứa Print
             print_crop_top = int(height * 0.86) 
-            
             crop_img = img.crop((left, print_crop_top, right, height))
 
+            # Xử lý ảnh
             crop_img = crop_img.convert('L') 
-            
             enhancer = ImageEnhance.Contrast(crop_img)
             crop_img = enhancer.enhance(2.0) 
-            
             crop_img = ImageOps.invert(crop_img)
 
+            # OCR whitelist số để đọc nhanh hơn
             custom_config = r'--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
-            
             text = pytesseract.image_to_string(crop_img, config=custom_config)
             
+            # Lấy tất cả các chuỗi số tìm được
             numbers = re.findall(r'\d+', text)
             
+            print_num = 0
+            edition_num = 0
+            
             if numbers:
-                int_numbers = [int(n) for n in numbers]
-                print_num = max(int_numbers)
+                # TRƯỜNG HỢP 1: Đọc được 2 số riêng biệt (VD: '2964', '7')
+                if len(numbers) >= 2:
+                    print_num = int(numbers[0])
+                    edition_num = int(numbers[1])
+                    print(f"[OCR LOG] 👁️ Thẻ {i+1}: Tách chuẩn -> Print: {print_num} | Ed: {edition_num}", flush=True)
+
+                # TRƯỜNG HỢP 2: Số bị dính chùm (VD: '29647') -> Cắt số cuối
+                elif len(numbers) == 1:
+                    raw_str = numbers[0]
+                    if len(raw_str) > 1:
+                        # Logic của bạn: Cắt số cuối làm Edition
+                        print_num = int(raw_str[:-1]) # Lấy từ đầu đến sát cuối
+                        edition_num = int(raw_str[-1]) # Lấy số cuối cùng
+                        print(f"[OCR LOG] 👁️ Thẻ {i+1}: Dính chùm '{raw_str}' -> Cắt Print: {print_num} | Ed: {edition_num}", flush=True)
+                    else:
+                        # Nếu chỉ đọc được 1 chữ số (VD: '5'), coi như là Print, Ed=0
+                        print_num = int(raw_str)
+                        print(f"[OCR LOG] 👁️ Thẻ {i+1}: Chỉ thấy 1 số -> Print: {print_num}", flush=True)
                 
-                results.append((i, print_num))
-                print(f"[OCR LOG] 👁️ Thẻ {i+1}: Đọc được Print = {print_num} (Raw: '{text.strip()}')", flush=True)
+                # Lưu kết quả (Chỉ lưu Print để logic nhặt hoạt động, Edition để dành update sau)
+                if print_num > 0:
+                    results.append((i, print_num))
             else:
                  print(f"[OCR LOG] 👁️ Thẻ {i+1}: Không đọc được số. (Raw: '{text.strip()}')", flush=True)
 
