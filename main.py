@@ -467,7 +467,9 @@ def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
             if loop.is_running(): loop.stop()
             if not loop.is_closed(): loop.close()
         except: pass
-
+            
+# --- WEB SERVER (UI) ---
+app = Flask(__name__)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
