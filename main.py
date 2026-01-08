@@ -4,32 +4,30 @@ from dotenv import load_dotenv
 import numpy as np
 from PIL import Image, ImageOps, ImageEnhance
 import io
-import base64       
-from groq import Groq 
+import google.generativeai as genai  # <--- Thư viện Google mới
 
 load_dotenv()
 
-# --- CẤU HÌNH GROQ AI (MULTI-KEY ROTATION) ---
-# Hỗ trợ nhập nhiều Key cách nhau bởi dấu phẩy
-# Ví dụ Env: GROQ_API_KEY="key1,key2,key3"
-groq_api_keys = []
+# --- CẤU HÌNH GEMINI AI (Thay thế Groq) ---
+gemini_api_keys = []
 try:
-    env_keys = os.getenv("GROQ_API_KEY", "")
-    # Tách chuỗi bằng dấu phẩy và xóa khoảng trắng thừa
-    groq_api_keys = [k.strip() for k in env_keys.split(',') if k.strip()]
+    env_keys = os.getenv("GEMINI_API_KEY", "")
+    gemini_api_keys = [k.strip() for k in env_keys.split(',') if k.strip()]
     
-    if groq_api_keys:
-        print(f"✅ [SYSTEM] Đã nạp thành công {len(groq_api_keys)} Key Groq AI!", flush=True)
+    if gemini_api_keys:
+        print(f"✅ [SYSTEM] Đã nạp thành công {len(gemini_api_keys)} Key Gemini AI!", flush=True)
     else:
-        print("⚠️ [SYSTEM] CHƯA CÓ GROQ_API_KEY! Hãy thêm vào biến môi trường (ngăn cách bằng dấu phẩy).", flush=True)
+        print("⚠️ [SYSTEM] CHƯA CÓ GEMINI_API_KEY! Hãy thêm vào biến môi trường.", flush=True)
 except Exception as e:
     print(f"❌ [SYSTEM] Lỗi nạp Key: {e}", flush=True)
 
-def get_groq_client():
-    """Lấy ngẫu nhiên 1 client từ danh sách key để tránh Rate Limit"""
-    if not groq_api_keys: return None
-    selected_key = random.choice(groq_api_keys)
-    return Groq(api_key=selected_key)
+def get_gemini_model():
+    """Lấy model Gemini với key ngẫu nhiên"""
+    if not gemini_api_keys: return None
+    selected_key = random.choice(gemini_api_keys)
+    genai.configure(api_key=selected_key)
+    # Dùng model Flash cho tốc độ nhanh nhất
+    return genai.GenerativeModel('gemini-1.5-flash')
 
 # --- CẤU HÌNH CHUNG ---
 main_tokens = os.getenv("MAIN_TOKENS", "").split(",")
@@ -182,61 +180,33 @@ def health_monitoring_check():
         check_bot_health(bot_data, bot_id)
 
 # ==============================================================================
-# <<< HÀM HỖ TRỢ CHO GROQ AI (OCR MỚI - MULTI KEY) >>>
+# <<< HÀM HỖ TRỢ CHO GEMINI AI (OCR MỚI) >>>
 # ==============================================================================
-def encode_image_to_base64(pil_image):
-    """Chuyển đổi ảnh PIL sang Base64 để gửi API"""
-    buffered = io.BytesIO()
-    if pil_image.mode != 'RGB':
-        pil_image = pil_image.convert('RGB')
-    pil_image.save(buffered, format="JPEG")
-    return base64.b64encode(buffered.getvalue()).decode('utf-8')
-
-def get_number_from_groq(pil_image):
-    """Gửi ảnh lên Groq và nhận về text (Có xoay vòng Key)"""
-    client = get_groq_client()
-    if not client: return ""
-    
-    base64_image = encode_image_to_base64(pil_image)
+def get_number_from_gemini(pil_image):
+    """Gửi ảnh lên Google Gemini và nhận về text"""
+    model = get_gemini_model()
+    if not model: return ""
     
     try:
-        completion = client.chat.completions.create(
-            # --- CẬP NHẬT MODEL MỚI TẠI ĐÂY ---
-            model="llama-3.2-90b-vision-preview", 
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text", 
-                            "text": "Identify the numbers in this image (Print and Edition). Output ONLY the numbers separated by a space. Example: '1234 5'. If only one number, output it."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            temperature=0, 
-            max_tokens=15 
-        )
-        return completion.choices[0].message.content.strip()
+        # Gemini nhận trực tiếp PIL Image, không cần base64 phức tạp
+        response = model.generate_content([
+            "Identify the numbers in this image (Print and Edition). Output ONLY the numbers separated by a space. Example: '1234 5'. If only one number, output it.",
+            pil_image
+        ])
+        return response.text.strip()
     except Exception as e:
-        print(f"[GROQ ERR] Lỗi gọi API: {e}", flush=True)
+        print(f"[GEMINI ERR] Lỗi gọi API: {e}", flush=True)
         return ""
 
 # ==============================================================================
-# <<< XỬ LÝ ẢNH (PHIÊN BẢN GROQ AI) >>>
+# <<< XỬ LÝ ẢNH (PHIÊN BẢN GEMINI AI) >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
-    if not groq_api_keys:
-        print("[OCR LOG] ❌ Bỏ qua vì thiếu GROQ_API_KEY", flush=True)
+    if not gemini_api_keys:
+        print("[OCR LOG] ❌ Bỏ qua vì thiếu GEMINI_API_KEY", flush=True)
         return []
 
-    print(f"[OCR LOG] 📥 Đang tải ảnh và gửi Groq AI...", flush=True)
+    print(f"[OCR LOG] 📥 Đang tải ảnh và gửi Gemini AI...", flush=True)
     
     img_content = None
     for attempt in range(3):
@@ -264,11 +234,12 @@ def scan_image_for_prints(image_url):
             left = i * card_width
             right = (i + 1) * card_width
             
+            # Cắt phần dưới cùng chứa Print
             print_crop_top = int(height * 0.86) 
             crop_img = img.crop((left, print_crop_top, right, height))
 
-            # --- GỌI AI GROQ ---
-            text = get_number_from_groq(crop_img)
+            # --- GỌI GEMINI ---
+            text = get_number_from_gemini(crop_img)
             # -------------------
             
             numbers = re.findall(r'\d+', text)
@@ -279,16 +250,16 @@ def scan_image_for_prints(image_url):
                 if len(numbers) >= 2:
                     print_num = int(numbers[0])
                     edition_num = int(numbers[1])
-                    print(f"[GROQ] 🤖 Thẻ {i+1}: AI đọc -> Print: {print_num} | Ed: {edition_num}", flush=True)
+                    print(f"[GEMINI] 🤖 Thẻ {i+1}: AI đọc -> Print: {print_num} | Ed: {edition_num}", flush=True)
                 elif len(numbers) == 1:
                     raw_str = numbers[0]
                     if len(raw_str) > 1:
                         print_num = int(raw_str[:-1]) 
                         edition_num = int(raw_str[-1]) 
-                        print(f"[GROQ] 🤖 Thẻ {i+1}: AI đọc dính '{raw_str}' -> Cắt Print: {print_num}", flush=True)
+                        print(f"[GEMINI] 🤖 Thẻ {i+1}: AI đọc dính '{raw_str}' -> Cắt Print: {print_num}", flush=True)
                     else:
                         print_num = int(raw_str)
-                        print(f"[GROQ] 🤖 Thẻ {i+1}: AI chỉ thấy: {print_num}", flush=True)
+                        print(f"[GEMINI] 🤖 Thẻ {i+1}: AI chỉ thấy: {print_num}", flush=True)
                 
                 if print_num > 0:
                     results.append((i, print_num))
@@ -303,7 +274,7 @@ def scan_image_for_prints(image_url):
         return []
 
 # ==============================================================================
-# <<< LOGIC NHẶT THẺ - PHIÊN BẢN MỚI (MULTI-MODE) >>>
+# <<< LOGIC NHẶT THẺ >>>
 # ==============================================================================
 async def scan_and_share_drop_info(bot, msg, channel_id):
     """Bot 1 quét thông tin và chia sẻ cho tất cả bot khác"""
@@ -324,7 +295,7 @@ async def scan_and_share_drop_info(bot, msg, channel_id):
         print(f"[SCAN] ⚠️ Lỗi fetch message: {e}", flush=True)
         return
     
-    # 1. QUÉT TIM (NHANH NHẤT - ƯU TIÊN)
+    # 1. QUÉT TIM
     heart_data = None
     try:
         async for msg_item in msg.channel.history(limit=3):
@@ -341,7 +312,7 @@ async def scan_and_share_drop_info(bot, msg, channel_id):
     except Exception as e:
         print(f"[SCAN] ⚠️ Lỗi đọc tim: {e}", flush=True)
     
-    # 2. QUÉT PRINT (CHẬM HƠN - DÙNG GROQ AI)
+    # 2. QUÉT PRINT (GEMINI AI)
     ocr_data = None
     image_url = None
     if msg.embeds and msg.embeds[0].image:
@@ -352,7 +323,7 @@ async def scan_and_share_drop_info(bot, msg, channel_id):
     if image_url:
         loop = asyncio.get_event_loop()
         ocr_data = await loop.run_in_executor(None, scan_image_for_prints, image_url)
-        print(f"[SCAN] 👁️ Kết quả Groq AI: {ocr_data}", flush=True)
+        print(f"[SCAN] 👁️ Kết quả Gemini AI: {ocr_data}", flush=True)
     
     # Lưu vào shared memory
     with shared_drop_info["lock"]:
@@ -393,7 +364,7 @@ async def handle_grab(bot, msg, bot_num):
         heart_data = shared_drop_info["heart_data"]
         ocr_data = shared_drop_info["ocr_data"]
     
-    # --- ĐOẠN FIX QUAN TRỌNG: TỰ ĐỘNG CHUYỂN ĐỔI DATA CŨ ---
+    # --- DATA FIX ---
     mode1_active = target_server.get(f'mode_1_active_{bot_num}')
     mode2_active = target_server.get(f'mode_2_active_{bot_num}')
     mode3_active = target_server.get(f'mode_3_active_{bot_num}')
@@ -405,7 +376,7 @@ async def handle_grab(bot, msg, bot_num):
         mode1_active = bool(mode1_active)
         mode2_active = bool(mode2_active)
         mode3_active = bool(mode3_active)
-    # --------------------------------------------------------
+    # ----------------
 
     heart_min = target_server.get(f'heart_min_{bot_num}', 50)
     heart_max = target_server.get(f'heart_max_{bot_num}', 99999)
@@ -530,7 +501,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shadow OCR Master Control</title>
+    <title>Shadow OCR Master Control (GEMINI)</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -538,18 +509,18 @@ HTML_TEMPLATE = """
         
         /* HEADER & MASTER PANEL */
         .header { text-align: center; margin-bottom: 20px; }
-        .header h1 { color: #ffd700; text-shadow: 0 0 10px rgba(255, 215, 0, 0.5); }
+        .header h1 { color: #00e676; text-shadow: 0 0 10px rgba(0, 230, 118, 0.5); }
         
         .master-panel {
-            background: linear-gradient(135deg, #2c003e, #000000);
-            border: 2px solid #ffd700;
+            background: linear-gradient(135deg, #002e18, #000000);
+            border: 2px solid #00e676;
             border-radius: 12px;
             padding: 20px;
             margin-bottom: 30px;
-            box-shadow: 0 0 20px rgba(255, 215, 0, 0.2);
+            box-shadow: 0 0 20px rgba(0, 230, 118, 0.2);
         }
         .master-title {
-            text-align: center; color: #ffd700; font-weight: bold; margin-bottom: 15px; text-transform: uppercase;
+            text-align: center; color: #00e676; font-weight: bold; margin-bottom: 15px; text-transform: uppercase;
             border-bottom: 1px solid #444; padding-bottom: 10px; font-size: 1.2em;
         }
         
@@ -564,8 +535,8 @@ HTML_TEMPLATE = """
         
         /* SHARED STYLES */
         .btn { padding: 8px 15px; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold; }
-        .btn-sync { background: #ffd700; color: #000; width: 100%; margin-top: 15px; font-size: 1.1em; transition: 0.3s; }
-        .btn-sync:hover { background: #ffea00; box-shadow: 0 0 15px #ffd700; }
+        .btn-sync { background: #00e676; color: #000; width: 100%; margin-top: 15px; font-size: 1.1em; transition: 0.3s; }
+        .btn-sync:hover { background: #00b359; box-shadow: 0 0 15px #00e676; }
         
         .btn-add { background: #006400; margin-bottom: 20px; }
         .btn-del { background: #8b0000; float: right; font-size: 0.8em; padding: 2px 8px; }
@@ -599,7 +570,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        <h1>👑 SHADOW MASTER CONTROL (AI EDITION)</h1>
+        <h1>💎 SHADOW MASTER CONTROL (GEMINI)</h1>
         <div style="color: #888; font-size: 0.9em;">Uptime: <span id="uptime">Loading...</span></div>
     </div>
 
