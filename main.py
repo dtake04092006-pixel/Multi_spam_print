@@ -2,18 +2,27 @@ import discord, asyncio, threading, time, os, re, requests, json, random, traceb
 from flask import Flask, request, render_template_string, jsonify
 from dotenv import load_dotenv
 import numpy as np
-import pytesseract
 from PIL import Image, ImageOps, ImageEnhance
 import io
-
-# --- CẤU HÌNH OCR ---
-# Lưu ý: Nếu chạy trên Windows, bạn có thể cần sửa đường dẫn này thành đường dẫn cài Tesseract trên máy bạn
-# Ví dụ: r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
+import base64       # <--- Thư viện mới để mã hóa ảnh
+from groq import Groq # <--- Thư viện AI Groq
 
 load_dotenv()
 
-# --- CẤU HÌNH ---
+# --- CẤU HÌNH GROQ AI (Thay thế Tesseract) ---
+# Tự động lấy Key từ biến môi trường GROQ_API_KEY trên Render
+groq_client = None
+try:
+    api_key = os.getenv("GROQ_API_KEY")
+    if api_key:
+        groq_client = Groq(api_key=api_key)
+        print("✅ [SYSTEM] Đã kết nối Groq AI thành công!", flush=True)
+    else:
+        print("⚠️ [SYSTEM] CHƯA CÓ GROQ_API_KEY! Hãy thêm vào biến môi trường.", flush=True)
+except Exception as e:
+    print(f"❌ [SYSTEM] Lỗi khởi tạo Groq: {e}", flush=True)
+
+# --- CẤU HÌNH CHUNG ---
 main_tokens = os.getenv("MAIN_TOKENS", "").split(",")
 tokens = os.getenv("TOKENS", "").split(",")
 karuta_id, karibbit_id = "646937666251915264", "1311684840462225440"
@@ -164,28 +173,74 @@ def health_monitoring_check():
         check_bot_health(bot_data, bot_id)
 
 # ==============================================================================
-# <<< XỬ LÝ ẢNH (OCR) - FIX LỖI SSL & RETRY >>>
+# <<< HÀM HỖ TRỢ CHO GROQ AI (OCR MỚI) >>>
+# ==============================================================================
+def encode_image_to_base64(pil_image):
+    """Chuyển đổi ảnh PIL sang Base64 để gửi API"""
+    buffered = io.BytesIO()
+    # Convert sang RGB để tránh lỗi mode (nếu ảnh gốc là RGBA/P)
+    if pil_image.mode != 'RGB':
+        pil_image = pil_image.convert('RGB')
+    pil_image.save(buffered, format="JPEG")
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+def get_number_from_groq(pil_image):
+    """Gửi ảnh lên Groq và nhận về text"""
+    if not groq_client: return ""
+    
+    base64_image = encode_image_to_base64(pil_image)
+    
+    try:
+        completion = groq_client.chat.completions.create(
+            model="llama-3.2-11b-vision-preview",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text", 
+                            "text": "Identify the numbers in this image (Print and Edition). Output ONLY the numbers separated by a space. Example: '1234 5'. If only one number, output it."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            temperature=0, # Chính xác tuyệt đối, không sáng tạo
+            max_tokens=15  # Chỉ cần trả lời ngắn
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[GROQ ERR] Lỗi gọi API: {e}", flush=True)
+        return ""
+
+# ==============================================================================
+# <<< XỬ LÝ ẢNH (PHIÊN BẢN GROQ AI) >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
-    print(f"[OCR LOG] 📥 Đang tải ảnh từ URL...", flush=True)
+    # Nếu chưa config key thì bỏ qua luôn cho đỡ tốn thời gian
+    if not groq_client:
+        print("[OCR LOG] ❌ Bỏ qua vì thiếu GROQ_API_KEY", flush=True)
+        return []
+
+    print(f"[OCR LOG] 📥 Đang tải ảnh và gửi Groq AI...", flush=True)
     
-    # --- ĐOẠN FIX: Thử lại 3 lần nếu mạng lỗi ---
+    # Retry logic (Giữ nguyên vì mạng Render hay lag)
     img_content = None
     for attempt in range(3):
         try:
-            # Tăng timeout lên 10s để đỡ bị ngắt khi mạng lag
             resp = requests.get(image_url, timeout=10) 
             if resp.status_code == 200:
                 img_content = resp.content
-                break # Tải thành công thì thoát vòng lặp
+                break 
         except Exception as e:
-            print(f"[OCR LOG] ⚠️ Lần {attempt+1} lỗi tải ảnh: {e}. Đang thử lại...", flush=True)
-            time.sleep(1.5) # Nghỉ 1.5s rồi thử lại
+            time.sleep(1)
     
-    if img_content is None:
-        print(f"[OCR LOG] ❌ Đã thử 3 lần nhưng không tải được ảnh.", flush=True)
-        return []
-    # --------------------------------------------
+    if img_content is None: return []
 
     try:
         img = Image.open(io.BytesIO(img_content))
@@ -197,61 +252,58 @@ def scan_image_for_prints(image_url):
         card_width = width // num_cards
         results = []
 
-        print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột.", flush=True)
+        # print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột.", flush=True)
 
         for i in range(num_cards):
             left = i * card_width
             right = (i + 1) * card_width
             
-            # Cắt phần dưới cùng chứa Print
+            # Cắt phần dưới cùng chứa Print (Bottom 14%)
+            # Cắt nhỏ ảnh giúp AI đọc chính xác hơn và gửi nhanh hơn
             print_crop_top = int(height * 0.86) 
             crop_img = img.crop((left, print_crop_top, right, height))
 
-            # Xử lý ảnh
-            crop_img = crop_img.convert('L') 
-            enhancer = ImageEnhance.Contrast(crop_img)
-            crop_img = enhancer.enhance(2.0) 
-            crop_img = ImageOps.invert(crop_img)
-
-            # OCR whitelist số
-            custom_config = r'--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
-            text = pytesseract.image_to_string(crop_img, config=custom_config)
+            # --- GỌI AI GROQ ---
+            text = get_number_from_groq(crop_img)
+            # -------------------
             
-            # Regex tìm số
+            # Regex tìm số từ phản hồi của AI
             numbers = re.findall(r'\d+', text)
             
             print_num = 0
             edition_num = 0
             
             if numbers:
-                # TRƯỜNG HỢP 1: Tách chuẩn 2 số
+                # TRƯỜNG HỢP 1: AI đọc tách bạch 2 số (VD: "2964 7")
                 if len(numbers) >= 2:
                     print_num = int(numbers[0])
                     edition_num = int(numbers[1])
-                    print(f"[OCR LOG] 👁️ Thẻ {i+1}: Tách chuẩn -> Print: {print_num} | Ed: {edition_num}", flush=True)
+                    print(f"[GROQ] 🤖 Thẻ {i+1}: AI đọc -> Print: {print_num} | Ed: {edition_num}", flush=True)
 
-                # TRƯỜNG HỢP 2: Dính chùm -> Cắt số cuối
+                # TRƯỜNG HỢP 2: AI đọc dính chùm hoặc chỉ thấy 1 số
                 elif len(numbers) == 1:
                     raw_str = numbers[0]
                     if len(raw_str) > 1:
+                        # Logic cũ: Cắt số cuối làm Edition
                         print_num = int(raw_str[:-1]) 
                         edition_num = int(raw_str[-1]) 
-                        print(f"[OCR LOG] 👁️ Thẻ {i+1}: Dính chùm '{raw_str}' -> Cắt Print: {print_num} | Ed: {edition_num}", flush=True)
+                        print(f"[GROQ] 🤖 Thẻ {i+1}: AI đọc dính '{raw_str}' -> Cắt Print: {print_num}", flush=True)
                     else:
                         print_num = int(raw_str)
-                        print(f"[OCR LOG] 👁️ Thẻ {i+1}: Chỉ thấy 1 số -> Print: {print_num}", flush=True)
+                        print(f"[GROQ] 🤖 Thẻ {i+1}: AI chỉ thấy: {print_num}", flush=True)
                 
                 if print_num > 0:
                     results.append((i, print_num))
             else:
-                 print(f"[OCR LOG] 👁️ Thẻ {i+1}: Không đọc được số. (Raw: '{text.strip()}')", flush=True)
+                 pass # AI không thấy số nào
 
         return results
 
     except Exception as e:
-        print(f"[OCR LOG] ❌ Lỗi xử lý ảnh: {e}", flush=True)
+        print(f"[OCR LOG] ❌ Lỗi xử lý: {e}", flush=True)
         traceback.print_exc()
         return []
+
 # ==============================================================================
 # <<< LOGIC NHẶT THẺ - PHIÊN BẢN MỚI (MULTI-MODE) >>>
 # ==============================================================================
@@ -291,7 +343,7 @@ async def scan_and_share_drop_info(bot, msg, channel_id):
     except Exception as e:
         print(f"[SCAN] ⚠️ Lỗi đọc tim: {e}", flush=True)
     
-    # 2. QUÉT PRINT (CHẬM HƠN)
+    # 2. QUÉT PRINT (CHẬM HƠN - DÙNG GROQ AI)
     ocr_data = None
     image_url = None
     if msg.embeds and msg.embeds[0].image:
@@ -300,10 +352,10 @@ async def scan_and_share_drop_info(bot, msg, channel_id):
         image_url = msg.attachments[0].url
     
     if image_url:
-        print(f"[SCAN] 📷 Đang quét ảnh OCR...", flush=True)
+        # print(f"[SCAN] 📷 Đang quét ảnh OCR...", flush=True)
         loop = asyncio.get_event_loop()
         ocr_data = await loop.run_in_executor(None, scan_image_for_prints, image_url)
-        print(f"[SCAN] 👁️ Kết quả OCR: {ocr_data}", flush=True)
+        print(f"[SCAN] 👁️ Kết quả Groq AI: {ocr_data}", flush=True)
     
     # Lưu vào shared memory
     with shared_drop_info["lock"]:
@@ -318,7 +370,6 @@ async def handle_grab(bot, msg, bot_num):
     """
     
     channel_id = msg.channel.id
-    # Tìm server (thêm strip() để xóa khoảng trắng thừa nếu có)
     target_server = next((s for s in servers if str(s.get('main_channel_id')).strip() == str(channel_id)), None)
     
     if not target_server:
@@ -327,9 +378,8 @@ async def handle_grab(bot, msg, bot_num):
 
     auto_grab = target_server.get(f'auto_grab_enabled_{bot_num}', False)
     if not auto_grab: 
-        # Nếu Bot 1 (Bot chính) bị tắt, in log cảnh báo để biết
         if bot_num == 1:
-            print(f"[DEBUG FAIL] ⛔ Bot 1 thấy Drop nhưng nút trạng thái đang là STOPPED. Hãy bật lên RUNNING.", flush=True)
+            print(f"[DEBUG FAIL] ⛔ Bot 1 thấy Drop nhưng nút trạng thái đang là STOPPED.", flush=True)
         return
 
     # CHỈ BOT 1 QUÉT - CÁC BOT KHÁC CHỜ
@@ -351,14 +401,10 @@ async def handle_grab(bot, msg, bot_num):
     mode2_active = target_server.get(f'mode_2_active_{bot_num}')
     mode3_active = target_server.get(f'mode_3_active_{bot_num}')
 
-    # Nếu cả 3 cái đều chưa có (do dùng file save cũ), TỰ ĐỘNG BẬT MODE 1
     if mode1_active is None and mode2_active is None and mode3_active is None:
-        print(f"[AUTO-FIX] ⚠️ Bot {bot_num}: Phát hiện Data cũ. Tự động kích hoạt Mode 1 (Tim) để chạy ngay.", flush=True)
         mode1_active = True
-        # Lưu ngược lại vào bộ nhớ để lần sau không cần fix nữa
         target_server[f'mode_1_active_{bot_num}'] = True
     else:
-        # Ép kiểu về boolean để tránh lỗi None
         mode1_active = bool(mode1_active)
         mode2_active = bool(mode2_active)
         mode3_active = bool(mode3_active)
@@ -429,12 +475,11 @@ async def handle_grab(bot, msg, bot_num):
         
         asyncio.create_task(grab_action())
     else:
-        # Log debug để biết nếu không có thẻ nào thỏa mãn
         active_modes = []
         if mode1_active: active_modes.append("Mode 1")
         if mode2_active: active_modes.append("Mode 2")
         if mode3_active: active_modes.append("Mode 3")
-        print(f"[DEBUG] Bot {bot_num}: Đã quét xong nhưng không nhặt. (Modes bật: {active_modes}, Tim: {heart_data})", flush=True)
+        print(f"[DEBUG] Bot {bot_num}: Đã quét nhưng không nhặt. (Modes: {active_modes}, Tim: {heart_data}, Print: {ocr_data})", flush=True)
 
 # --- KHỞI TẠO BOT ---
 def initialize_and_run_bot(token, bot_id_str, is_main, ready_event=None):
@@ -557,7 +602,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        <h1>👑 SHADOW MASTER CONTROL</h1>
+        <h1>👑 SHADOW MASTER CONTROL (AI EDITION)</h1>
         <div style="color: #888; font-size: 0.9em;">Uptime: <span id="uptime">Loading...</span></div>
     </div>
 
@@ -730,7 +775,6 @@ HTML_TEMPLATE = """
                 const card = btn.closest('.bot-card');
                 const serverId = btn.closest('.panel').dataset.serverId;
                 const botId = btn.dataset.bot;
-                // Lấy data hiện tại để gửi (dù logic server lưu độc lập nhưng cứ gửi cho đủ)
                 const heartMin = card.querySelector('.heart-min').value;
                 const heartMax = card.querySelector('.heart-max').value;
                 const printMin = card.querySelector('.print-min').value;
@@ -891,7 +935,7 @@ def api_sync_master_config():
     return jsonify({'status': 'success'})
     
 if __name__ == "__main__":
-    print("🚀 Shadow Grabber - Multi Mode Edition Starting...", flush=True)
+    print("🚀 Shadow Grabber - Multi Mode AI Edition Starting...", flush=True)
     load_settings()
 
     for i, token in enumerate(main_tokens):
@@ -901,7 +945,7 @@ if __name__ == "__main__":
     print("⚠️ Chế độ: MULTI MODE - Có thể bật nhiều mode cùng lúc", flush=True)
 
     threading.Thread(target=periodic_task, args=(1800, save_settings, "Save"), daemon=True).start()
-    threading.Thread(target=periodic_task, args=(300, health_monitoring_check, "Health"), daemon=True).start()
+    threading.Thread(target=periodic_task, args=(30, health_monitoring_check, "Health"), daemon=True).start()
     
     port = int(os.environ.get("PORT", 10000))
     from waitress import serve
