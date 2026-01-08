@@ -6,3 +6,5 @@ waitress
 pytesseract
 numpy
 Pillow
+discord.py
+groq
