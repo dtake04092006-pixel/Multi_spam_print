@@ -4,23 +4,32 @@ from dotenv import load_dotenv
 import numpy as np
 from PIL import Image, ImageOps, ImageEnhance
 import io
-import base64       # <--- Thư viện mới để mã hóa ảnh
-from groq import Groq # <--- Thư viện AI Groq
+import base64       
+from groq import Groq 
 
 load_dotenv()
 
-# --- CẤU HÌNH GROQ AI (Thay thế Tesseract) ---
-# Tự động lấy Key từ biến môi trường GROQ_API_KEY trên Render
-groq_client = None
+# --- CẤU HÌNH GROQ AI (MULTI-KEY ROTATION) ---
+# Hỗ trợ nhập nhiều Key cách nhau bởi dấu phẩy
+# Ví dụ Env: GROQ_API_KEY="key1,key2,key3"
+groq_api_keys = []
 try:
-    api_key = os.getenv("GROQ_API_KEY")
-    if api_key:
-        groq_client = Groq(api_key=api_key)
-        print("✅ [SYSTEM] Đã kết nối Groq AI thành công!", flush=True)
+    env_keys = os.getenv("GROQ_API_KEY", "")
+    # Tách chuỗi bằng dấu phẩy và xóa khoảng trắng thừa
+    groq_api_keys = [k.strip() for k in env_keys.split(',') if k.strip()]
+    
+    if groq_api_keys:
+        print(f"✅ [SYSTEM] Đã nạp thành công {len(groq_api_keys)} Key Groq AI!", flush=True)
     else:
-        print("⚠️ [SYSTEM] CHƯA CÓ GROQ_API_KEY! Hãy thêm vào biến môi trường.", flush=True)
+        print("⚠️ [SYSTEM] CHƯA CÓ GROQ_API_KEY! Hãy thêm vào biến môi trường (ngăn cách bằng dấu phẩy).", flush=True)
 except Exception as e:
-    print(f"❌ [SYSTEM] Lỗi khởi tạo Groq: {e}", flush=True)
+    print(f"❌ [SYSTEM] Lỗi nạp Key: {e}", flush=True)
+
+def get_groq_client():
+    """Lấy ngẫu nhiên 1 client từ danh sách key để tránh Rate Limit"""
+    if not groq_api_keys: return None
+    selected_key = random.choice(groq_api_keys)
+    return Groq(api_key=selected_key)
 
 # --- CẤU HÌNH CHUNG ---
 main_tokens = os.getenv("MAIN_TOKENS", "").split(",")
@@ -173,25 +182,25 @@ def health_monitoring_check():
         check_bot_health(bot_data, bot_id)
 
 # ==============================================================================
-# <<< HÀM HỖ TRỢ CHO GROQ AI (OCR MỚI) >>>
+# <<< HÀM HỖ TRỢ CHO GROQ AI (OCR MỚI - MULTI KEY) >>>
 # ==============================================================================
 def encode_image_to_base64(pil_image):
     """Chuyển đổi ảnh PIL sang Base64 để gửi API"""
     buffered = io.BytesIO()
-    # Convert sang RGB để tránh lỗi mode (nếu ảnh gốc là RGBA/P)
     if pil_image.mode != 'RGB':
         pil_image = pil_image.convert('RGB')
     pil_image.save(buffered, format="JPEG")
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 def get_number_from_groq(pil_image):
-    """Gửi ảnh lên Groq và nhận về text"""
-    if not groq_client: return ""
+    """Gửi ảnh lên Groq và nhận về text (Có xoay vòng Key)"""
+    client = get_groq_client()
+    if not client: return ""
     
     base64_image = encode_image_to_base64(pil_image)
     
     try:
-        completion = groq_client.chat.completions.create(
+        completion = client.chat.completions.create(
             model="llama-3.2-11b-vision-preview",
             messages=[
                 {
@@ -210,8 +219,8 @@ def get_number_from_groq(pil_image):
                     ]
                 }
             ],
-            temperature=0, # Chính xác tuyệt đối, không sáng tạo
-            max_tokens=15  # Chỉ cần trả lời ngắn
+            temperature=0, 
+            max_tokens=15 
         )
         return completion.choices[0].message.content.strip()
     except Exception as e:
@@ -222,14 +231,12 @@ def get_number_from_groq(pil_image):
 # <<< XỬ LÝ ẢNH (PHIÊN BẢN GROQ AI) >>>
 # ==============================================================================
 def scan_image_for_prints(image_url):
-    # Nếu chưa config key thì bỏ qua luôn cho đỡ tốn thời gian
-    if not groq_client:
+    if not groq_api_keys:
         print("[OCR LOG] ❌ Bỏ qua vì thiếu GROQ_API_KEY", flush=True)
         return []
 
     print(f"[OCR LOG] 📥 Đang tải ảnh và gửi Groq AI...", flush=True)
     
-    # Retry logic (Giữ nguyên vì mạng Render hay lag)
     img_content = None
     for attempt in range(3):
         try:
@@ -252,14 +259,10 @@ def scan_image_for_prints(image_url):
         card_width = width // num_cards
         results = []
 
-        # print(f"[OCR LOG] 🖼️ Ảnh size {width}x{height}. Chia làm {num_cards} cột.", flush=True)
-
         for i in range(num_cards):
             left = i * card_width
             right = (i + 1) * card_width
             
-            # Cắt phần dưới cùng chứa Print (Bottom 14%)
-            # Cắt nhỏ ảnh giúp AI đọc chính xác hơn và gửi nhanh hơn
             print_crop_top = int(height * 0.86) 
             crop_img = img.crop((left, print_crop_top, right, height))
 
@@ -267,24 +270,18 @@ def scan_image_for_prints(image_url):
             text = get_number_from_groq(crop_img)
             # -------------------
             
-            # Regex tìm số từ phản hồi của AI
             numbers = re.findall(r'\d+', text)
-            
             print_num = 0
             edition_num = 0
             
             if numbers:
-                # TRƯỜNG HỢP 1: AI đọc tách bạch 2 số (VD: "2964 7")
                 if len(numbers) >= 2:
                     print_num = int(numbers[0])
                     edition_num = int(numbers[1])
                     print(f"[GROQ] 🤖 Thẻ {i+1}: AI đọc -> Print: {print_num} | Ed: {edition_num}", flush=True)
-
-                # TRƯỜNG HỢP 2: AI đọc dính chùm hoặc chỉ thấy 1 số
                 elif len(numbers) == 1:
                     raw_str = numbers[0]
                     if len(raw_str) > 1:
-                        # Logic cũ: Cắt số cuối làm Edition
                         print_num = int(raw_str[:-1]) 
                         edition_num = int(raw_str[-1]) 
                         print(f"[GROQ] 🤖 Thẻ {i+1}: AI đọc dính '{raw_str}' -> Cắt Print: {print_num}", flush=True)
@@ -295,7 +292,7 @@ def scan_image_for_prints(image_url):
                 if print_num > 0:
                     results.append((i, print_num))
             else:
-                 pass # AI không thấy số nào
+                 pass 
 
         return results
 
@@ -352,7 +349,6 @@ async def scan_and_share_drop_info(bot, msg, channel_id):
         image_url = msg.attachments[0].url
     
     if image_url:
-        # print(f"[SCAN] 📷 Đang quét ảnh OCR...", flush=True)
         loop = asyncio.get_event_loop()
         ocr_data = await loop.run_in_executor(None, scan_image_for_prints, image_url)
         print(f"[SCAN] 👁️ Kết quả Groq AI: {ocr_data}", flush=True)
@@ -775,6 +771,7 @@ HTML_TEMPLATE = """
                 const card = btn.closest('.bot-card');
                 const serverId = btn.closest('.panel').dataset.serverId;
                 const botId = btn.dataset.bot;
+                
                 const heartMin = card.querySelector('.heart-min').value;
                 const heartMax = card.querySelector('.heart-max').value;
                 const printMin = card.querySelector('.print-min').value;
