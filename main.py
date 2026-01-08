@@ -27,7 +27,7 @@ def get_gemini_model():
     selected_key = random.choice(gemini_api_keys)
     genai.configure(api_key=selected_key)
     # Dùng model Flash cho tốc độ nhanh nhất
-    return genai.GenerativeModel('gemini-1.5-flash')
+    return genai.GenerativeModel('gemini-1.5-flash-latest')
 
 # --- CẤU HÌNH CHUNG ---
 main_tokens = os.getenv("MAIN_TOKENS", "").split(",")
