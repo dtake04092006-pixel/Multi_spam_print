@@ -201,7 +201,8 @@ def get_number_from_groq(pil_image):
     
     try:
         completion = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
+            # --- CẬP NHẬT MODEL MỚI TẠI ĐÂY ---
+            model="llama-3.2-90b-vision-preview", 
             messages=[
                 {
                     "role": "user",
