@@ -3,6 +3,5 @@ flask
 python-dotenv
 requests
 waitress
-pytesseract
 numpy
 Pillow
